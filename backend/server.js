@@ -504,7 +504,48 @@ setInterval(async () => {
         const group = room.groups[groupName];
         const auction = group.currentAuction;
 
-        if (auction.closed) continue;
+        // Load next item if closed and queue has remaining tools
+        if (auction.closed && !group.nextItemLoading && group.currentAuctionIdx + 1 < (group.queue || []).length) {
+          group.nextItemLoading = true;
+          setTimeout(async () => {
+            try {
+              group.currentAuctionIdx += 1;
+              const nextToolId = group.queue[group.currentAuctionIdx];
+              const toolDetails = TOOL_CATALOG[nextToolId];
+
+              group.currentAuction = {
+                toolId: nextToolId,
+                basePrice: toolDetails.basePrice,
+                currentBid: toolDetails.basePrice,
+                leadingPlayer: null,
+                endsAt: null,
+                timerActive: false,
+                unsold: false,
+                closed: false,
+                bids: []
+              };
+              group.nextItemLoading = false;
+
+              // Emit group-specific sync update for the next item
+              io.to(`${roomCode}-${groupName}`).emit('auction:sync', {
+                toolId: nextToolId,
+                basePrice: toolDetails.basePrice,
+                currentBid: toolDetails.basePrice,
+                leadingPlayer: null,
+                endsAt: null,
+                bids: [],
+                queue: group.queue
+              });
+              broadcastAdminSync(roomCode);
+            } catch (err) {
+              console.error("❌ Error loading next auction item:", err);
+              group.nextItemLoading = false;
+            }
+          }, 3500);
+        }
+
+        const isFullyClosed = auction.closed && (group.currentAuctionIdx + 1 >= (group.queue || []).length);
+        if (isFullyClosed) continue;
         allClosed = false;
 
         // Verify timer expiration
@@ -516,8 +557,14 @@ setInterval(async () => {
         }
       }
 
+      // A group is fully closed if its current item is closed AND it has no more items in queue
+      const isGroupFullyClosed = (gn) => {
+        const g = room.groups[gn];
+        return g.currentAuction.closed && (g.currentAuctionIdx + 1 >= (g.queue || []).length);
+      };
+
       // Grace Period Trigger (When first group closes its auction)
-      const closedCount = Object.keys(room.groups).filter(g => room.groups[g].currentAuction.closed).length;
+      const closedCount = Object.keys(room.groups).filter(g => isGroupFullyClosed(g)).length;
       if (closedCount > 0 && closedCount < Object.keys(room.groups).length && !room.gracePeriodActive) {
         // Start 60s Grace Period
         room.gracePeriodActive = true;
@@ -717,29 +764,53 @@ async function startNewAuctionRound(roomCode) {
   }
 
   // Fetch next tools matching round tier catalog
-  let roundTier = room.activeRound === 2 ? 'B' : 'A'; // Round 2 is B-tier, Round 3 is A-tier
+  let roundTier = room.activeRound === 1 ? 'C' : (room.activeRound === 2 ? 'B' : 'A');
   const roundTools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === roundTier);
 
-  // Pre-load tool queues
-  room.queue = roundTools.slice(0, 3); // queue 3 tools
-  
+  // Group-specific queues of size exactly n - 1
   for (const groupName of Object.keys(room.groups)) {
     const group = room.groups[groupName];
+    
+    // Count active players in this group in MongoDB
+    const groupPlayers = await Player.find({ roomCode, group: groupName });
+    const n = groupPlayers.length;
+    const numTools = Math.max(0, n - 1); // Exactly n - 1 tools, minimum of 0
+
+    // Build group specific queue cycling roundTools
+    group.queue = [];
+    for (let i = 0; i < numTools; i++) {
+      group.queue.push(roundTools[i % roundTools.length]);
+    }
+    
+    group.currentAuctionIdx = 0;
+    group.nextItemLoading = false;
     group.currentAuction = resetGroupAuction();
     
-    // Load first item
-    const firstToolId = room.queue[0];
-    const toolDetails = TOOL_CATALOG[firstToolId];
+    if (group.queue.length > 0) {
+      // Load first item for this group
+      const firstToolId = group.queue[0];
+      const toolDetails = TOOL_CATALOG[firstToolId];
 
-    group.currentAuction.toolId = firstToolId;
-    group.currentAuction.basePrice = toolDetails.basePrice;
-    group.currentAuction.currentBid = toolDetails.basePrice;
+      group.currentAuction.toolId = firstToolId;
+      group.currentAuction.basePrice = toolDetails.basePrice;
+      group.currentAuction.currentBid = toolDetails.basePrice;
+
+      // Emit group-specific sync start
+      io.to(`${roomCode}-${groupName}`).emit('transition:auctionStarted', {
+        activeRound: room.activeRound,
+        queue: group.queue
+      });
+    } else {
+      // Empty queue for groups with 0 or 1 player: mark auction closed cleanly
+      group.currentAuction.closed = true;
+      
+      // Emit group-specific sync start with empty queue
+      io.to(`${roomCode}-${groupName}`).emit('transition:auctionStarted', {
+        activeRound: room.activeRound,
+        queue: []
+      });
+    }
   }
-
-  io.to(roomCode).emit('transition:auctionStarted', {
-    activeRound: room.activeRound,
-    queue: room.queue
-  });
 
   await GameRoom.updateOne({ roomCode }, { status: `round${room.activeRound}_auction` });
 }
@@ -774,8 +845,8 @@ app.post('/api/admin/match/start', async (req, res) => {
   if (!room) return res.status(404).json({ error: 'Room not found.' });
 
   try {
-    room.status = 'auction';
-    room.activeRound = 1;
+    room.status = 'lobby'; // Keep status as 'lobby' so admin can start it manually!
+    room.activeRound = 0;  // Set activeRound to 0 until round 1 starts!
     
     // Preload round 1 tools queue
     const round1Tools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === 'C');
@@ -784,18 +855,11 @@ app.post('/api/admin/match/start', async (req, res) => {
     for (const groupName of Object.keys(room.groups)) {
       const group = room.groups[groupName];
       group.currentAuction = resetGroupAuction();
-      
-      const firstToolId = room.queue[0];
-      const toolDetails = TOOL_CATALOG[firstToolId];
-
-      group.currentAuction.toolId = firstToolId;
-      group.currentAuction.basePrice = toolDetails.basePrice;
-      group.currentAuction.currentBid = toolDetails.basePrice;
     }
 
-    io.to(cleanRoomCode).emit('transition:matchStarted', { queue: room.queue });
+    io.to(cleanRoomCode).emit('transition:lobbyReady'); // Notify players that match is initialized!
     
-    const dbRoom = new GameRoom({ roomCode: cleanRoomCode, toolQueue: room.queue, status: 'round1_auction' });
+    const dbRoom = new GameRoom({ roomCode: cleanRoomCode, toolQueue: room.queue, status: 'lobby' });
     await dbRoom.save();
 
     // Reset player profiles for match start
@@ -827,7 +891,7 @@ app.post('/api/admin/match/start', async (req, res) => {
     }
 
     broadcastAdminSync(cleanRoomCode);
-    res.json({ message: 'Match started successfully!', queue: room.queue });
+    res.json({ message: 'Match initialized in lobby! Click Start Round 1 Bidding to begin.', queue: room.queue });
   } catch (err) {
     res.status(500).json({ error: 'Could not create game room.' });
   }
@@ -924,19 +988,30 @@ app.post('/api/admin/round/forcestart', async (req, res) => {
   const room = roomsState[cleanRoomCode];
   if (!room) return res.status(404).json({ error: 'Room not found.' });
 
-  if (room.activeRound < 3) {
-    room.activeRound += 1;
-    room.status = 'auction';
-    await startNewAuctionRound(cleanRoomCode);
-  } else {
-    room.status = 'finished';
-    await generateRoomVerificationHashes(cleanRoomCode);
-    io.to(cleanRoomCode).emit('match:finished');
-    await GameRoom.updateOne({ roomCode: cleanRoomCode }, { status: 'finished' });
-  }
+  try {
+    if (room.status === 'lobby' || room.activeRound === 0) {
+      room.activeRound = 1;
+      room.status = 'auction';
+      await startNewAuctionRound(cleanRoomCode);
+    } else {
+      if (room.activeRound < 3) {
+        room.activeRound += 1;
+        room.status = 'auction';
+        await startNewAuctionRound(cleanRoomCode);
+      } else {
+        room.status = 'finished';
+        await generateRoomVerificationHashes(cleanRoomCode);
+        io.to(cleanRoomCode).emit('match:finished');
+        await GameRoom.updateOne({ roomCode: cleanRoomCode }, { status: 'finished' });
+      }
+    }
 
-  broadcastAdminSync(cleanRoomCode);
-  res.json({ message: `Round forcefully started!` });
+    broadcastAdminSync(cleanRoomCode);
+    res.json({ message: `Round forcefully started!`, activeRound: room.activeRound, status: room.status });
+  } catch (err) {
+    console.error("❌ Force start round error:", err);
+    res.status(500).json({ error: "Could not force start round." });
+  }
 });
 
 // Admin room results extraction endpoint

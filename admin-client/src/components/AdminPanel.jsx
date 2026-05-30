@@ -454,13 +454,30 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
                   </select>
                 </div>
                 <div>
-                  <button 
-                    onClick={handleStartMatch}
-                    disabled={roomsStateSync.roomStatus !== 'lobby'}
-                    className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-extrabold uppercase rounded shadow-lg transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none text-center block text-[11px]"
-                  >
-                    🚀 Start Match Round 1
-                  </button>
+                  {roomsStateSync.roomStatus === 'lobby' && (roomsStateSync.activeRound === 0 || roomsStateSync.activeRound === 1) ? (
+                    <div className="flex flex-col gap-2">
+                      <button 
+                        onClick={handleForceRoundStart}
+                        className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-emerald-800 hover:from-emerald-500 hover:to-emerald-700 text-white border-2 border-emerald-500/35 font-extrabold uppercase rounded shadow-lg transition active:scale-95 text-center block text-[11px] animate-pulse"
+                      >
+                        🟢 Start Round 1 Bidding
+                      </button>
+                      <button 
+                        onClick={handleStartMatch}
+                        className="w-full py-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 font-bold uppercase rounded text-center block text-[9px] transition active:scale-95"
+                      >
+                        🔄 Reset/Initialize Lobby
+                      </button>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={handleStartMatch}
+                      disabled={roomsStateSync.roomStatus !== 'lobby'}
+                      className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-700 hover:from-emerald-500 hover:to-teal-600 text-white font-extrabold uppercase rounded shadow-lg transition active:scale-95 disabled:opacity-40 disabled:pointer-events-none text-center block text-[11px]"
+                    >
+                      🚀 Initialize Match Lobby
+                    </button>
+                  )}
                 </div>
               </div>
 

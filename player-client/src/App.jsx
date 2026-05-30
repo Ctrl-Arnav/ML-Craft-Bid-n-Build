@@ -360,6 +360,10 @@ export default function App() {
 
   // Quick Preset Loader Helper (Matches new 6-slot sequential pipeline layout)
   const loadRecipePreset = (presetNum) => {
+    if (roomStatus !== 'builder' || isRoundSubmitted) {
+      alert("Pipeline grid editing is locked! Presets can only be loaded during the active build phase.");
+      return;
+    }
     const newGrid = Array(GRID_SIZE).fill(null);
     if (presetNum === 1) {
       // Basic Tabular Classifier (at row 0)
@@ -476,7 +480,7 @@ export default function App() {
 
   // Drag and Drop handlers
   const handleDragStartFromInventory = (e, toolId) => {
-    if (isRoundSubmitted) {
+    if (roomStatus !== 'builder' || isRoundSubmitted) {
       e.preventDefault();
       return;
     }
@@ -485,7 +489,7 @@ export default function App() {
   };
 
   const handleDragStartFromGrid = (e, cellIndex) => {
-    if (isRoundSubmitted) {
+    if (roomStatus !== 'builder' || isRoundSubmitted) {
       e.preventDefault();
       return;
     }
@@ -495,7 +499,7 @@ export default function App() {
 
   const handleDropOnGrid = (e, targetIndex) => {
     e.preventDefault();
-    if (isRoundSubmitted) return;
+    if (roomStatus !== 'builder' || isRoundSubmitted) return;
     const source = e.dataTransfer.getData('source');
     
     if (source === 'inventory') {
@@ -531,7 +535,7 @@ export default function App() {
 
   // Trash bin deletion
   const handleDeleteSelected = () => {
-    if (isRoundSubmitted || selectedCellIndex === null) return;
+    if (roomStatus !== 'builder' || isRoundSubmitted || selectedCellIndex === null) return;
     const newGrid = [...grid];
     newGrid[selectedCellIndex] = null;
     setGrid(newGrid);
@@ -844,8 +848,10 @@ export default function App() {
                         onDragOver={(e) => e.preventDefault()}
                         onDrop={(e) => handleDropOnGrid(e, idx)}
                         onClick={() => handleCellClick(idx)}
-                        className={`grass-tile border border-minecraft-grassDark/20 cursor-pointer transition-colors duration-200 ${
-                          selectedCellIndex === idx ? 'ring-2 ring-yellow-400 z-20' : 'hover:brightness-105'
+                        className={`grass-tile border border-minecraft-grassDark/20 transition-colors duration-200 ${
+                          roomStatus === 'builder' && !isRoundSubmitted ? 'cursor-pointer hover:brightness-105' : 'cursor-default'
+                        } ${
+                          selectedCellIndex === idx ? 'ring-2 ring-yellow-400 z-20' : ''
                         }`}
                       />
                     ))}
@@ -924,7 +930,7 @@ export default function App() {
 
                   {/* Redstone Trash Bin */}
                   <button 
-                    disabled={selectedCellIndex === null || !grid[selectedCellIndex]}
+                    disabled={selectedCellIndex === null || !grid[selectedCellIndex] || roomStatus !== 'builder' || isRoundSubmitted}
                     onClick={handleDeleteSelected}
                     className="p-2 rounded border-2 border-slate-950 text-white flex items-center gap-1.5 transition-all shadow-md font-bold text-xs uppercase disabled:opacity-30 disabled:pointer-events-none bg-red-800 hover:bg-red-700"
                     title="Remove placed block"
@@ -1251,8 +1257,9 @@ export default function App() {
                       • 📦 Wooden Chest
                     </div>
                     <button 
+                      disabled={roomStatus !== 'builder' || isRoundSubmitted}
                       onClick={() => loadRecipePreset(1)}
-                      className="w-full py-1 bg-slate-950 hover:bg-slate-900 text-white font-bold rounded text-[9px] uppercase tracking-wider"
+                      className="w-full py-1 bg-slate-950 hover:bg-slate-900 text-white font-bold rounded text-[9px] uppercase tracking-wider disabled:opacity-40 disabled:pointer-events-none"
                     >
                       Instant Craft Preset 1
                     </button>
@@ -1268,8 +1275,9 @@ export default function App() {
                       • ✨ Enchanting Bench + Ender Chest
                     </div>
                     <button 
+                      disabled={roomStatus !== 'builder' || isRoundSubmitted}
                       onClick={() => loadRecipePreset(2)}
-                      className="w-full py-1 bg-slate-950 hover:bg-slate-900 text-white font-bold rounded text-[9px] uppercase tracking-wider"
+                      className="w-full py-1 bg-slate-950 hover:bg-slate-900 text-white font-bold rounded text-[9px] uppercase tracking-wider disabled:opacity-40 disabled:pointer-events-none"
                     >
                       Instant Craft Preset 2
                     </button>
