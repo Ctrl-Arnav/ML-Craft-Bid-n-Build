@@ -1,0 +1,817 @@
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const mongoose = require('mongoose');
+require('dotenv').config();
+
+const Player = require('./models/Player');
+const GameRoom = require('./models/GameRoom');
+const Bid = require('./models/Bid');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: "*", // Adjust for deployment security
+    methods: ["GET", "POST"]
+  }
+});
+
+// MongoDB Atlas Connection Setup
+const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/pipeline-arena";
+mongoose.connect(MONGO_URI)
+  .then(() => console.log("🌱 Connected successfully to MongoDB Atlas!"))
+  .catch(err => console.error("❌ MongoDB connection error:", err));
+
+// ==========================================
+// STATE & MEMORY DICTIONARIES (Per Room & Group)
+// ==========================================
+const roomsState = {}; 
+/*
+Structure:
+roomsState[roomCode] = {
+  activeRound: 1,
+  status: 'lobby', // 'lobby' | 'auction' | 'builder' | 'cooldown'
+  groups: {
+    'A': {
+      players: [], // PlayerIds
+      currentAuction: {
+        toolId: null,
+        basePrice: 0,
+        currentBid: 0,
+        leadingPlayer: null,
+        endsAt: null,
+        timerActive: false,
+        unsold: false,
+        closed: false,
+        bids: [] // List of bid snapshots
+      },
+      builderEndsAt: null,
+      builderActive: false,
+      cooldownEndsAt: null,
+      cooldownActive: false
+    },
+    'B': { ... },
+    'C': { ... }
+  },
+  gracePeriodEndsAt: null,
+  gracePeriodActive: false,
+  queue: [] // preloaded tool IDs
+}
+*/
+
+// Fetch tool base price catalog matching data list
+const TOOL_CATALOG = {
+  'cobblestone_sample': { name: 'Cobblestone', basePrice: 0, tier: 'Basic' },
+  'raw_iron_ore': { name: 'Raw Iron Ore', basePrice: 200, tier: 'C' },
+  'raw_gold_ore': { name: 'Raw Gold Ore', basePrice: 350, tier: 'B' },
+  'diamond_matrix_ore': { name: 'Diamond Ore', basePrice: 700, tier: 'A' },
+  'standard_furnace': { name: 'Furnace', basePrice: 100, tier: 'C' },
+  'high_speed_blast_furnace': { name: 'Fast Blast Furnace', basePrice: 300, tier: 'B' },
+  'axe_blueprint': { name: 'Axe Blueprint', basePrice: 150, tier: 'Basic' },
+  'pickaxe_blueprint': { name: 'Pickaxe Blueprint', basePrice: 150, tier: 'Basic' },
+  'sword_blueprint': { name: 'Sword Blueprint', basePrice: 150, tier: 'Basic' },
+  'shovel_blueprint': { name: 'Shovel Blueprint', basePrice: 150, tier: 'Basic' },
+  'standard_crafting_table': { name: 'Crafting Table', basePrice: 200, tier: 'Basic' },
+  'auto_crafter_block': { name: 'Auto-Crafter', basePrice: 450, tier: 'B' },
+  'redstone_compute_block': { name: 'Redstone Block', basePrice: 500, tier: 'A' },
+  'anvil_restructurer': { name: 'Anvil', basePrice: 120, tier: 'C' },
+  'enchanting_bench': { name: 'Enchanting Bench', basePrice: 250, tier: 'B' },
+  'wooden_chest': { name: 'Wooden Chest', basePrice: 50, tier: 'Basic' },
+  'ender_chest': { name: 'Ender Chest', basePrice: 400, tier: 'A' }
+};
+
+// ==========================================
+// CORE ADMIN SYNCHRONIZATION HELPERS
+// ==========================================
+function broadcastAdminSync(roomCode) {
+  const room = roomsState[roomCode];
+  if (!room) return;
+  io.to(`${roomCode}-admins`).emit('admin:sync', {
+    roomStatus: room.status,
+    activeRound: room.activeRound,
+    admins: room.admins || [],
+    groups: room.groups,
+    queue: room.queue
+  });
+}
+
+// ==========================================
+// SOCKET.IO CONTROLLERS
+// ==========================================
+io.on('connection', (socket) => {
+  console.log(`🔌 Client connected: ${socket.id}`);
+
+  // 0. Admin Login & Room Connection (Validates "Aloha" Passcode)
+  socket.on('admin:join', async ({ roomCode, displayName, passcode, action }) => {
+    try {
+      const cleanRoomCode = roomCode.toUpperCase().trim();
+      const cleanName = displayName.trim();
+
+      if (passcode !== "Aloha") {
+        socket.emit('error:adminJoin', 'Incorrect admin access passcode!');
+        return;
+      }
+
+      // If joining, verify that the room exists in memory or DB
+      if (action === 'join' && !roomsState[cleanRoomCode]) {
+        const dbRoom = await GameRoom.findOne({ roomCode: cleanRoomCode });
+        if (!dbRoom) {
+          socket.emit('error:adminJoin', 'Room does not exist! Please create the room first.');
+          return;
+        }
+      }
+
+      // Initialize room state memory if new
+      if (!roomsState[cleanRoomCode]) {
+        roomsState[cleanRoomCode] = {
+          activeRound: 1,
+          status: 'lobby',
+          groups: {
+            'A': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+            'B': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+            'C': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false }
+          },
+          gracePeriodEndsAt: null,
+          gracePeriodActive: false,
+          queue: [],
+          admins: []
+        };
+      }
+
+      const room = roomsState[cleanRoomCode];
+      if (!room.admins) room.admins = [];
+
+      // Add admin to in-memory list
+      if (!room.admins.includes(cleanName)) {
+        room.admins.push(cleanName);
+      }
+
+      // Save admin indicators to socket metadata
+      socket.isAdmin = true;
+      socket.roomCode = cleanRoomCode;
+      socket.displayName = cleanName;
+
+      socket.join(cleanRoomCode);
+      socket.join(`${cleanRoomCode}-admins`);
+
+      console.log(`👑 Admin ${cleanName} joined room ${cleanRoomCode}`);
+
+      // Instantly sync room settings to joining admin
+      socket.emit('admin:sync', {
+        roomStatus: room.status,
+        activeRound: room.activeRound,
+        admins: room.admins,
+        groups: room.groups,
+        queue: room.queue
+      });
+
+      // Broadcast list updates to admin room channel
+      io.to(`${cleanRoomCode}-admins`).emit('admin:list', { admins: room.admins });
+
+    } catch (err) {
+      console.error("Admin join error:", err);
+      socket.emit('error:adminJoin', 'Could not connect admin. Server database error.');
+    }
+  });
+
+  // 1. Join Room & Assign Group Lobby
+  socket.on('room:join', async ({ roomCode, displayName }) => {
+    try {
+      const cleanRoomCode = roomCode.toUpperCase().trim();
+      const cleanName = displayName.trim();
+
+      // Check duplicate displayName in room
+      const existing = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
+      if (existing && !existing.isDisconnected) {
+        socket.emit('error:join', 'Display name already taken in this room.');
+        return;
+      }
+
+      // Initialize room state memory if new
+      if (!roomsState[cleanRoomCode]) {
+        roomsState[cleanRoomCode] = {
+          activeRound: 1,
+          status: 'lobby',
+          groups: {
+            'A': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+            'B': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+            'C': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false }
+          },
+          gracePeriodEndsAt: null,
+          gracePeriodActive: false,
+          queue: [],
+          admins: []
+        };
+      }
+
+      const room = roomsState[cleanRoomCode];
+
+      // Reconnection check
+      let playerDoc = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
+      let groupName = 'A';
+
+      if (playerDoc) {
+        playerDoc.isDisconnected = false;
+        playerDoc.lastActiveAt = Date.now();
+        await playerDoc.save();
+        groupName = playerDoc.group;
+      } else {
+        // Group assignment: sequential join distribution
+        const activePlayersCount = await Player.countDocuments({ roomCode: cleanRoomCode });
+        const isLargeRoom = activePlayersCount >= 20; // threshold
+        
+        const groupOptions = isLargeRoom ? ['A', 'B', 'C'] : ['A', 'B'];
+        const targetIndex = activePlayersCount % groupOptions.length;
+        groupName = groupOptions[targetIndex];
+
+        // Generate custom player ID
+        const randomId = Math.floor(1000 + Math.random() * 9000);
+        const playerId = `PLAYER-${randomId}-${groupName}`;
+
+        playerDoc = new Player({
+          roomCode: cleanRoomCode,
+          displayName: cleanName,
+          playerId,
+          group: groupName
+        });
+        await playerDoc.save();
+      }
+
+      // Link socket to channels
+      socket.join(cleanRoomCode); // Global channel
+      socket.join(`${cleanRoomCode}-${groupName}`); // Group channel
+
+      // Save player information to socket metadata
+      socket.playerId = playerDoc.playerId;
+      socket.displayName = playerDoc.displayName;
+      socket.roomCode = cleanRoomCode;
+      socket.group = groupName;
+
+      // Add to memory list
+      if (!room.groups[groupName].players.includes(playerDoc.playerId)) {
+        room.groups[groupName].players.push(playerDoc.playerId);
+      }
+
+      console.log(`👤 Player ${cleanName} joined room ${cleanRoomCode} in Group ${groupName}`);
+
+      // Broadcast Lobby update
+      socket.emit('room:sync', {
+        playerId: playerDoc.playerId,
+        displayName: playerDoc.displayName,
+        group: groupName,
+        emeraldBalance: playerDoc.emeraldBalance,
+        ownedToolIds: playerDoc.ownedToolIds,
+        gridState: playerDoc.gridState,
+        roomStatus: room.status,
+        activeRound: room.activeRound
+      });
+
+      // Update global leaderboard broadcast
+      await broadcastLeaderboard(cleanRoomCode);
+      broadcastAdminSync(cleanRoomCode);
+
+    } catch (err) {
+      console.error("Join error:", err);
+      socket.emit('error:join', 'Could not join room. Server database error.');
+    }
+  });
+
+  // 2. Real-Time Bidding Controller
+  socket.on('auction:bid', async ({ amount }) => {
+    const { roomCode, group, displayName, playerId } = socket;
+    if (!roomCode || !group) return;
+
+    const room = roomsState[roomCode];
+    const auction = room.groups[group].currentAuction;
+
+    if (room.status !== 'auction' || auction.closed) {
+      socket.emit('error:bid', 'Bidding is currently closed or in builder phase.');
+      return;
+    }
+
+    try {
+      // Validate budget
+      const playerDoc = await Player.findOne({ playerId });
+      if (!playerDoc) return;
+
+      const bidAmount = parseInt(amount, 10);
+
+      // Floor check (Base Price)
+      if (bidAmount < auction.basePrice) {
+        socket.emit('error:bid', `First bid must be at least the base price of 💎${auction.basePrice}!`);
+        return;
+      }
+
+      // Increment raise check (Min 100 raise)
+      if (auction.leadingPlayer && bidAmount < (auction.currentBid + 100)) {
+        socket.emit('error:bid', `Raise must be at least 100 Emeralds above current leading bid!`);
+        return;
+      }
+
+      // Budget check
+      if (bidAmount > playerDoc.emeraldBalance) {
+        socket.emit('error:bid', `Insufficient Emerald Balance! Maximum bid allowed: 💎${playerDoc.emeraldBalance}`);
+        return;
+      }
+
+      // Accept Bid (Authors leading)
+      auction.currentBid = bidAmount;
+      auction.leadingPlayer = { playerId, displayName };
+      
+      // Start timer on FIRST bid placed
+      if (!auction.timerActive) {
+        auction.timerActive = true;
+      }
+      // Reset timer to 25 seconds
+      auction.endsAt = Date.now() + 25000;
+
+      // Add to local history
+      const bidRecord = {
+        displayName,
+        amount: bidAmount,
+        timeAgo: 'just now',
+        timestamp: Date.now()
+      };
+      auction.bids.unshift(bidRecord);
+
+      // Broadcast bid update to group only
+      io.to(`${roomCode}-${group}`).emit('auction:bidUpdate', {
+        currentBid: bidAmount,
+        leadingPlayer: auction.leadingPlayer,
+        endsAt: auction.endsAt,
+        bids: auction.bids
+      });
+
+      // Outbid warning notifications to all others in the group
+      socket.to(`${roomCode}-${group}`).emit('auction:outbid', {
+        message: `⚠ Outbid! ${displayName} bid 💎${bidAmount}`,
+        currentBid: bidAmount
+      });
+
+      broadcastAdminSync(roomCode);
+
+    } catch (err) {
+      console.error("Bid placement error:", err);
+    }
+  });
+
+  // 3. Grid Pipeline Submission
+  socket.on('pipeline:submit', async ({ gridState, score }) => {
+    const { roomCode, group, playerId, displayName } = socket;
+    if (!roomCode || !playerId) return;
+
+    try {
+      const playerDoc = await Player.findOne({ playerId });
+      if (!playerDoc) return;
+
+      // Save state to MongoDB Atlas
+      playerDoc.gridState = gridState;
+      playerDoc.currentScore = score;
+      await playerDoc.save();
+
+      console.log(`💾 Pipeline submitted by ${displayName} (Score: ${score})`);
+
+      // Sync global leaderboard
+      await broadcastLeaderboard(roomCode);
+      socket.emit('pipeline:submitted', { score });
+      broadcastAdminSync(roomCode);
+
+    } catch (err) {
+      console.error("Pipeline submission error:", err);
+    }
+  });
+
+  // 4. Disconnect Handling (Graceful reconnection logs)
+  socket.on('disconnect', async () => {
+    const { roomCode, displayName, isAdmin, playerId } = socket;
+    if (!roomCode) return;
+
+    try {
+      if (isAdmin) {
+        const room = roomsState[roomCode];
+        if (room && room.admins) {
+          room.admins = room.admins.filter(a => a !== displayName);
+          io.to(`${roomCode}-admins`).emit('admin:list', { admins: room.admins });
+          broadcastAdminSync(roomCode);
+        }
+        console.log(`🔌 Admin disconnected: ${displayName} from room ${roomCode}`);
+        return;
+      }
+
+      if (playerId) {
+        const playerDoc = await Player.findOne({ playerId });
+        if (playerDoc) {
+          playerDoc.isDisconnected = true;
+          await playerDoc.save();
+        }
+        console.log(`🔌 Client disconnected: ${displayName} from room ${roomCode}`);
+      }
+
+    } catch (err) {
+      console.error("Disconnect log error:", err);
+    }
+  });
+});
+
+// ==========================================
+// TIMER SYSTEM TICK LOOPS (500ms precision)
+// ==========================================
+setInterval(async () => {
+  for (const roomCode of Object.keys(roomsState)) {
+    const room = roomsState[roomCode];
+
+    // Tick 1: Auction Phase Timers
+    if (room.status === 'auction') {
+      let allClosed = true;
+
+      for (const groupName of Object.keys(room.groups)) {
+        const group = room.groups[groupName];
+        const auction = group.currentAuction;
+
+        if (auction.closed) continue;
+        allClosed = false;
+
+        // Verify timer expiration
+        if (auction.timerActive && Date.now() >= auction.endsAt) {
+          auction.closed = true;
+          auction.timerActive = false;
+
+          await handleAuctionClose(roomCode, groupName);
+        }
+      }
+
+      // Grace Period Trigger (When first group closes its auction)
+      const closedCount = Object.keys(room.groups).filter(g => room.groups[g].currentAuction.closed).length;
+      if (closedCount > 0 && closedCount < Object.keys(room.groups).length && !room.gracePeriodActive) {
+        // Start 60s Grace Period
+        room.gracePeriodActive = true;
+        room.gracePeriodEndsAt = Date.now() + 60000;
+        
+        // Notify global channels
+        io.to(roomCode).emit('transition:graceStarted', { endsAt: room.gracePeriodEndsAt });
+      }
+
+      // Check Grace Period Expiry or All Groups Finished
+      if (room.gracePeriodActive && (Date.now() >= room.gracePeriodEndsAt || closedCount === Object.keys(room.groups).length)) {
+        // Grace period expired ➔ Transition all groups to Builder Phase together!
+        room.gracePeriodActive = false;
+        room.status = 'builder';
+
+        for (const groupName of Object.keys(room.groups)) {
+          const group = room.groups[groupName];
+          
+          // Force close any remaining open groups
+          if (!group.currentAuction.closed) {
+            group.currentAuction.closed = true;
+            group.currentAuction.timerActive = false;
+            await handleAuctionClose(roomCode, groupName);
+          }
+
+          // Start 6-minute Builder timer
+          group.builderEndsAt = Date.now() + 360000; // 360s
+          group.builderActive = true;
+
+          io.to(`${roomCode}-${groupName}`).emit('transition:builderStarted', { endsAt: group.builderEndsAt });
+        }
+        
+        // Sync Global State Room
+        io.to(roomCode).emit('room:phaseUpdate', { status: 'builder' });
+        await GameRoom.updateOne({ roomCode }, { status: `round${room.activeRound}_builder` });
+      }
+    }
+
+    // Tick 2: Builder Phase Timers
+    if (room.status === 'builder') {
+      let allBuilderDone = true;
+
+      for (const groupName of Object.keys(room.groups)) {
+        const group = room.groups[groupName];
+
+        if (!group.builderActive) continue;
+        allBuilderDone = false;
+
+        if (Date.now() >= group.builderEndsAt) {
+          group.builderActive = false;
+          
+          // Start 30s planning Cooldown
+          group.cooldownEndsAt = Date.now() + 30000;
+          group.cooldownActive = true;
+
+          // Force auto-submit grids client-side trigger
+          io.to(`${roomCode}-${groupName}`).emit('transition:builderEnded');
+        }
+      }
+
+      // Verify cooldown completions
+      let allCooldownDone = true;
+      let hasActiveCooldowns = false;
+
+      for (const groupName of Object.keys(room.groups)) {
+        const group = room.groups[groupName];
+        if (group.cooldownActive) {
+          hasActiveCooldowns = true;
+          if (Date.now() >= group.cooldownEndsAt) {
+            group.cooldownActive = false;
+          } else {
+            allCooldownDone = false;
+          }
+        }
+      }
+
+      // Next Auction starts only after ALL groups have completed their cooldown
+      if (hasActiveCooldowns && allCooldownDone) {
+        // Increment round
+        if (room.activeRound < 3) {
+          room.activeRound += 1;
+          room.status = 'auction';
+          
+          // Reset Group Auction slots and load next queue
+          await startNewAuctionRound(roomCode);
+        } else {
+          // End match
+          room.status = 'finished';
+          io.to(roomCode).emit('match:finished');
+          await GameRoom.updateOne({ roomCode }, { status: 'finished' });
+        }
+      }
+    }
+  }
+}, 500);
+
+// ==========================================
+// CORE SYSTEM HELPER METHODS
+// ==========================================
+
+function resetGroupAuction() {
+  return {
+    toolId: null,
+    basePrice: 0,
+    currentBid: 0,
+    leadingPlayer: null,
+    endsAt: null,
+    timerActive: false,
+    unsold: false,
+    closed: false,
+    bids: []
+  };
+}
+
+async function handleAuctionClose(roomCode, groupName) {
+  const room = roomsState[roomCode];
+  const group = room.groups[groupName];
+  const auction = group.currentAuction;
+
+  if (auction.leadingPlayer) {
+    const { playerId, displayName } = auction.leadingPlayer;
+    const price = auction.currentBid;
+
+    try {
+      const playerDoc = await Player.findOne({ playerId });
+      if (playerDoc) {
+        // Deduct budget
+        playerDoc.emeraldBalance -= price;
+        // Unlock tool
+        playerDoc.ownedToolIds.push(auction.toolId);
+        await playerDoc.save();
+
+        // Archive Bid details to MongoDB Atlas
+        const bidLog = new Bid({
+          roomCode,
+          group: groupName,
+          toolId: auction.toolId,
+          playerName: displayName,
+          playerId,
+          amount: price
+        });
+        await bidLog.save();
+
+        console.log(`🏆 Auction won by ${displayName}: '${auction.toolId}' for 💎${price}`);
+
+        // Notify group channel
+        io.to(`${roomCode}-${groupName}`).emit('auction:sold', {
+          toolId: auction.toolId,
+          winner: displayName,
+          price,
+          emeraldBalance: playerDoc.emeraldBalance
+        });
+      }
+    } catch (err) {
+      console.error("Auction close transaction error:", err);
+    }
+  } else {
+    // Unsold item logic
+    auction.unsold = true;
+    io.to(`${roomCode}-${groupName}`).emit('auction:unsold', { toolId: auction.toolId });
+  }
+
+  // Sync grid items
+  await broadcastLeaderboard(roomCode);
+}
+
+async function startNewAuctionRound(roomCode) {
+  const room = roomsState[roomCode];
+  room.status = 'auction';
+
+  // Fetch next tools matching round tier catalog
+  let roundTier = room.activeRound === 2 ? 'B' : 'A'; // Round 2 is B-tier, Round 3 is A-tier
+  const roundTools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === roundTier);
+
+  // Pre-load tool queues
+  room.queue = roundTools.slice(0, 3); // queue 3 tools
+  
+  for (const groupName of Object.keys(room.groups)) {
+    const group = room.groups[groupName];
+    group.currentAuction = resetGroupAuction();
+    
+    // Load first item
+    const firstToolId = room.queue[0];
+    const toolDetails = TOOL_CATALOG[firstToolId];
+
+    group.currentAuction.toolId = firstToolId;
+    group.currentAuction.basePrice = toolDetails.basePrice;
+    group.currentAuction.currentBid = toolDetails.basePrice;
+  }
+
+  io.to(roomCode).emit('transition:auctionStarted', {
+    activeRound: room.activeRound,
+    queue: room.queue
+  });
+
+  await GameRoom.updateOne({ roomCode }, { status: `round${room.activeRound}_auction` });
+}
+
+async function broadcastLeaderboard(roomCode) {
+  try {
+    const players = await Player.find({ roomCode }).sort({ currentScore: -1 });
+    
+    const globalLeaderboard = players.map((p, idx) => ({
+      rank: idx + 1,
+      name: p.displayName,
+      playerId: p.playerId,
+      group: p.group,
+      score: p.currentScore,
+      budget: p.emeraldBalance
+    }));
+
+    io.to(roomCode).emit('leaderboard:update', { globalLeaderboard });
+  } catch (err) {
+    console.error("Leaderboard build error:", err);
+  }
+}
+
+// ==========================================
+// ADMIN CONTROL COMMAND HOOKS
+// ==========================================
+app.post('/api/admin/match/start', async (req, res) => {
+  const { roomCode, toolsQueue } = req.body;
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+
+  const room = roomsState[cleanRoomCode];
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+
+  try {
+    room.status = 'auction';
+    room.activeRound = 1;
+    
+    // Preload round 1 tools queue
+    const round1Tools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === 'C');
+    room.queue = toolsQueue || round1Tools.slice(0, 3);
+
+    for (const groupName of Object.keys(room.groups)) {
+      const group = room.groups[groupName];
+      group.currentAuction = resetGroupAuction();
+      
+      const firstToolId = room.queue[0];
+      const toolDetails = TOOL_CATALOG[firstToolId];
+
+      group.currentAuction.toolId = firstToolId;
+      group.currentAuction.basePrice = toolDetails.basePrice;
+      group.currentAuction.currentBid = toolDetails.basePrice;
+    }
+
+    io.to(cleanRoomCode).emit('transition:matchStarted', { queue: room.queue });
+    
+    const dbRoom = new GameRoom({ roomCode: cleanRoomCode, toolQueue: room.queue, status: 'round1_auction' });
+    await dbRoom.save();
+
+    broadcastAdminSync(cleanRoomCode);
+    res.json({ message: 'Match started successfully!', queue: room.queue });
+  } catch (err) {
+    res.status(500).json({ error: 'Could not create game room.' });
+  }
+});
+
+// Admin force skip group auction command
+app.post('/api/admin/auction/skip', async (req, res) => {
+  const { roomCode, group } = req.body;
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+
+  const room = roomsState[cleanRoomCode];
+  if (!room) return res.status(404).json({ error: 'Room state not found.' });
+
+  const targetGroup = room.groups[group];
+  if (!targetGroup) return res.status(404).json({ error: 'Group channel not found.' });
+
+  if (room.status !== 'auction' || targetGroup.currentAuction.closed) {
+    return res.status(400).json({ error: 'Auction is not active in this group.' });
+  }
+
+  // Force close group auction
+  targetGroup.currentAuction.closed = true;
+  targetGroup.currentAuction.timerActive = false;
+  
+  await handleAuctionClose(cleanRoomCode, group);
+  broadcastAdminSync(cleanRoomCode);
+
+  res.json({ message: `Group ${group} auction has been forcefully closed (skipped).` });
+});
+
+// Admin timer manipulation command
+app.post('/api/admin/timer/modify', async (req, res) => {
+  const { roomCode, group, action } = req.body;
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+
+  const room = roomsState[cleanRoomCode];
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+
+  const targetGroup = room.groups[group];
+  if (!targetGroup) return res.status(404).json({ error: 'Group channel not found.' });
+
+  const auction = targetGroup.currentAuction;
+  if (room.status !== 'auction' || auction.closed) {
+    return res.status(400).json({ error: 'Auction is not active in this group.' });
+  }
+
+  if (action === 'add30') {
+    auction.endsAt = (auction.endsAt || Date.now()) + 30000;
+  } else if (action === 'reset25') {
+    auction.endsAt = Date.now() + 25000;
+  }
+
+  // Broadcast bid update or tick sync to group
+  io.to(`${cleanRoomCode}-${group}`).emit('auction:bidUpdate', {
+    currentBid: auction.currentBid,
+    leadingPlayer: auction.leadingPlayer,
+    endsAt: auction.endsAt,
+    bids: auction.bids
+  });
+
+  broadcastAdminSync(cleanRoomCode);
+  res.json({ message: `Timer modified successfully for Group ${group}!` });
+});
+
+// Admin tool queue injection command
+app.post('/api/admin/auction/inject', async (req, res) => {
+  const { roomCode, toolId } = req.body;
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+
+  const room = roomsState[cleanRoomCode];
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+
+  if (!TOOL_CATALOG[toolId]) {
+    return res.status(400).json({ error: 'Invalid tool ID!' });
+  }
+
+  // Inject to queue
+  room.queue.push(toolId);
+
+  io.to(cleanRoomCode).emit('transition:auctionStarted', {
+    activeRound: room.activeRound,
+    queue: room.queue
+  });
+
+  broadcastAdminSync(cleanRoomCode);
+  res.json({ message: `Tool successfully injected into queue!`, queue: room.queue });
+});
+
+// Admin global force start round command
+app.post('/api/admin/round/forcestart', async (req, res) => {
+  const { roomCode } = req.body;
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+
+  const room = roomsState[cleanRoomCode];
+  if (!room) return res.status(404).json({ error: 'Room not found.' });
+
+  if (room.activeRound < 3) {
+    room.activeRound += 1;
+    room.status = 'auction';
+    await startNewAuctionRound(cleanRoomCode);
+  } else {
+    room.status = 'finished';
+    io.to(cleanRoomCode).emit('match:finished');
+    await GameRoom.updateOne({ roomCode: cleanRoomCode }, { status: 'finished' });
+  }
+
+  broadcastAdminSync(cleanRoomCode);
+  res.json({ message: `Round forcefully started!` });
+});
+
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+  console.log(`🚀 Bidding WebSocket Backend running on port ${PORT}`);
+});

@@ -1,0 +1,19 @@
+# Dependency folders
+node_modules/
+jspm_packages/
+
+# Compiled frontend builds
+dist/
+build/
+.svelte-kit/
+.next/
+
+# Environment secrets (Locally stored)
+.env
+.env.local
+.env.production
+.env.development
+
+# OS system files
+.DS_Store
+Thumbs.db
