@@ -74,9 +74,11 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
   const [verifyError, setVerifyError] = useState(null);
 
   const fetchResults = async () => {
+    if (!roomCode || !cleanBackendUrl) return;
     try {
       const res = await fetch(`${cleanBackendUrl}/api/admin/room/${roomCode}/results`);
-      if (res.ok) {
+      const contentType = res.headers.get('content-type') || '';
+      if (res.ok && contentType.includes('application/json')) {
         const data = await res.json();
         setRoomResults(data.results || []);
       }
@@ -105,12 +107,12 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
     }
   };
 
-  // Auto-fetch results when roomCode or activeTab changes
+  // Auto-fetch results when roomCode or activeTab changes (only after admin login)
   useEffect(() => {
-    if (roomCode) {
+    if (isAdminLoggedIn && roomCode) {
       fetchResults();
     }
-  }, [activeTab, roomCode]);
+  }, [activeTab, roomCode, isAdminLoggedIn]);
 
   // --- CONNECT SOCKETS FOR REAL-TIME SYNC ---
   const handleAdminJoin = (e) => {

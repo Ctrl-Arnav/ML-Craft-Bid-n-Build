@@ -10,7 +10,16 @@ const GameRoom = require('./models/GameRoom');
 const Bid = require('./models/Bid');
 
 const app = express();
-app.use(cors());
+
+// Explicit CORS config — required for Railway + Vercel cross-origin POST requests
+const corsOptions = {
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
+};
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions)); // Explicitly handle ALL preflight OPTIONS requests
 app.use(express.json());
 
 const server = http.createServer(app);
