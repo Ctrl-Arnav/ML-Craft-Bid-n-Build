@@ -116,7 +116,9 @@ export default function App() {
   };
 
   // --- MONGO BACKEND URL CONFIGS ---
-  const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+  const rawBackendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+  // Ensure the URL always has a protocol (guards against env var missing https://)
+  const backendUrl = rawBackendUrl.startsWith('http') ? rawBackendUrl : `https://${rawBackendUrl}`;
 
   // --- CONNECT SOCKETS ---
   const handleJoinLobby = (e) => {
