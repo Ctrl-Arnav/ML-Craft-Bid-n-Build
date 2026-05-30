@@ -38,6 +38,7 @@ const TIER_STYLES = {
 };
 
 export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
+  const cleanBackendUrl = backendUrl.endsWith('/') ? backendUrl.slice(0, -1) : backendUrl;
   // --- JOIN & PASSCODE LOBBY STATES ---
   const [isAdminLoggedIn, setIsAdminLoggedIn] = useState(false);
   const [adminName, setAdminName] = useState('');
@@ -74,7 +75,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
 
   const fetchResults = async () => {
     try {
-      const res = await fetch(`${backendUrl}/api/admin/room/${roomCode}/results`);
+      const res = await fetch(`${cleanBackendUrl}/api/admin/room/${roomCode}/results`);
       if (res.ok) {
         const data = await res.json();
         setRoomResults(data.results || []);
@@ -88,7 +89,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
     if (e) e.preventDefault();
     if (!searchHash.trim()) return;
     try {
-      const res = await fetch(`${backendUrl}/api/admin/verify/${searchHash.trim()}`);
+      const res = await fetch(`${cleanBackendUrl}/api/admin/verify/${searchHash.trim()}`);
       if (res.ok) {
         const data = await res.json();
         setVerifiedPlayer(data);
@@ -120,7 +121,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
     const cleanRoomCode = roomCode.toUpperCase().trim();
     const cleanName = adminName.trim();
 
-    const newSocket = io(backendUrl);
+    const newSocket = io(cleanBackendUrl);
 
     newSocket.on('connect', () => {
       console.log('👑 Admin Socket connected successfully');
@@ -161,14 +162,22 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
   // --- POST ACTION TRIGGERS ---
   const triggerAdminCommand = async (endpoint, payload) => {
     try {
-      const res = await fetch(`${backendUrl}${endpoint}`, {
+      const res = await fetch(`${cleanBackendUrl}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify(payload)
       });
-      const data = await res.json();
+      
+      const contentType = res.headers.get("content-type");
+      let data = {};
+      if (contentType && contentType.includes("application/json")) {
+        data = await res.json();
+      } else {
+        data = { error: await res.text() };
+      }
+
       if (res.ok) {
         setStatusMessage({ type: 'success', text: data.message || 'Action executed successfully!' });
       } else {
@@ -176,7 +185,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
       }
     } catch (err) {
       console.error(err);
-      setStatusMessage({ type: 'error', text: 'Network failure communicating with backend.' });
+      setStatusMessage({ type: 'error', text: `Network failure: ${err.message}` });
     }
   };
 
