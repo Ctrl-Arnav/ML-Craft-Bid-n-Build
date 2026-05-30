@@ -162,7 +162,7 @@ io.on('connection', (socket) => {
       // Initialize room state memory if new
       if (!roomsState[cleanRoomCode]) {
         roomsState[cleanRoomCode] = {
-          activeRound: 1,
+          activeRound: 0,
           status: 'lobby',
           groups: {
             'A': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
@@ -228,7 +228,7 @@ io.on('connection', (socket) => {
       // Initialize room state memory if new
       if (!roomsState[cleanRoomCode]) {
         roomsState[cleanRoomCode] = {
-          activeRound: 1,
+          activeRound: 0,
           status: 'lobby',
           groups: {
             'A': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
@@ -599,7 +599,11 @@ setInterval(async () => {
         
         // Sync Global State Room
         io.to(roomCode).emit('room:phaseUpdate', { status: 'builder' });
-        await GameRoom.updateOne({ roomCode }, { status: `round${room.activeRound}_builder` });
+        await GameRoom.findOneAndUpdate(
+          { roomCode },
+          { status: `round${room.activeRound}_builder` },
+          { upsert: true, new: true }
+        );
       }
     }
 
@@ -674,7 +678,11 @@ setInterval(async () => {
           room.status = 'finished';
           await generateRoomVerificationHashes(roomCode);
           io.to(roomCode).emit('match:finished');
-          await GameRoom.updateOne({ roomCode }, { status: 'finished' });
+          await GameRoom.findOneAndUpdate(
+            { roomCode },
+            { status: 'finished' },
+            { upsert: true, new: true }
+          );
         }
       }
     }
@@ -812,7 +820,12 @@ async function startNewAuctionRound(roomCode) {
     }
   }
 
-  await GameRoom.updateOne({ roomCode }, { status: `round${room.activeRound}_auction` });
+  // Upsert GameRoom status in DB (safe whether room doc exists or not)
+  await GameRoom.findOneAndUpdate(
+    { roomCode },
+    { status: `round${room.activeRound}_auction`, activeRound: room.activeRound },
+    { upsert: true, new: true }
+  );
 }
 
 async function broadcastLeaderboard(roomCode) {
@@ -839,10 +852,27 @@ async function broadcastLeaderboard(roomCode) {
 // ==========================================
 app.post('/api/admin/match/start', async (req, res) => {
   const { roomCode, toolsQueue } = req.body;
+  if (!roomCode) return res.status(400).json({ error: 'Room code is required.' });
   const cleanRoomCode = roomCode.toUpperCase().trim();
 
+  // Initialize room in memory if admin hasn't connected via socket yet
+  if (!roomsState[cleanRoomCode]) {
+    roomsState[cleanRoomCode] = {
+      activeRound: 0,
+      status: 'lobby',
+      groups: {
+        'A': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+        'B': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false },
+        'C': { players: [], currentAuction: resetGroupAuction(), builderEndsAt: null, builderActive: false, cooldownEndsAt: null, cooldownActive: false }
+      },
+      gracePeriodEndsAt: null,
+      gracePeriodActive: false,
+      queue: [],
+      admins: []
+    };
+  }
+
   const room = roomsState[cleanRoomCode];
-  if (!room) return res.status(404).json({ error: 'Room not found.' });
 
   try {
     room.status = 'lobby'; // Keep status as 'lobby' so admin can start it manually!
@@ -859,8 +889,12 @@ app.post('/api/admin/match/start', async (req, res) => {
 
     io.to(cleanRoomCode).emit('transition:lobbyReady'); // Notify players that match is initialized!
     
-    const dbRoom = new GameRoom({ roomCode: cleanRoomCode, toolQueue: room.queue, status: 'lobby' });
-    await dbRoom.save();
+    // Use upsert to avoid duplicate key errors on re-initialization
+    await GameRoom.findOneAndUpdate(
+      { roomCode: cleanRoomCode },
+      { roomCode: cleanRoomCode, toolQueue: room.queue, status: 'lobby', activeRound: 0 },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
 
     // Reset player profiles for match start
     try {
@@ -893,7 +927,8 @@ app.post('/api/admin/match/start', async (req, res) => {
     broadcastAdminSync(cleanRoomCode);
     res.json({ message: 'Match initialized in lobby! Click Start Round 1 Bidding to begin.', queue: room.queue });
   } catch (err) {
-    res.status(500).json({ error: 'Could not create game room.' });
+    console.error('❌ Match start error:', err);
+    res.status(500).json({ error: 'Could not initialize game room.' });
   }
 });
 
@@ -1002,7 +1037,11 @@ app.post('/api/admin/round/forcestart', async (req, res) => {
         room.status = 'finished';
         await generateRoomVerificationHashes(cleanRoomCode);
         io.to(cleanRoomCode).emit('match:finished');
-        await GameRoom.updateOne({ roomCode: cleanRoomCode }, { status: 'finished' });
+        await GameRoom.findOneAndUpdate(
+          { roomCode: cleanRoomCode },
+          { status: 'finished' },
+          { upsert: true, new: true }
+        );
       }
     }
 
