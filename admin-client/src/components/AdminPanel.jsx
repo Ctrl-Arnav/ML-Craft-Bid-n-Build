@@ -105,9 +105,9 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
     }
   };
 
-  // Auto-fetch results when results tab is loaded
+  // Auto-fetch results when roomCode or activeTab changes
   useEffect(() => {
-    if (activeTab === 'results' && roomCode) {
+    if (roomCode) {
       fetchResults();
     }
   }, [activeTab, roomCode]);
@@ -116,7 +116,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
   const handleAdminJoin = (e) => {
     if (e) e.preventDefault();
     if (!adminName.trim() || !roomCode.trim()) return alert('Name and Room Code are required!');
-    if (passcode !== 'Aloha') return alert('Incorrect passcode! hardcoded passcode is: Aloha');
+    if (passcode !== 'aloharean') return alert('Incorrect passcode credentials!');
 
     const cleanRoomCode = roomCode.toUpperCase().trim();
     const cleanName = adminName.trim();
@@ -278,7 +278,7 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
                 type="password"
                 value={passcode}
                 onChange={(e) => setPasscode(e.target.value)}
-                placeholder="Enter passcode (Aloha)"
+                placeholder="Enter passcode"
                 required
                 className="w-full bg-slate-950 border-2 border-slate-800 focus:border-red-500 rounded px-4 py-2.5 text-xs text-white focus:outline-none font-bold"
               />
@@ -572,6 +572,183 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
                     className="w-full py-2 bg-gradient-to-r from-yellow-600 to-amber-700 hover:from-yellow-500 hover:to-amber-600 text-white rounded font-extrabold uppercase text-[10px] tracking-widest transition-all font-mono"
                   >
                     ⚡ Force Start Next Round
+                  </button>
+                </div>
+
+                {/* Manual Player Registration */}
+                <div className="bg-[#212429] border border-slate-800 rounded-lg p-5 flex flex-col justify-between">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-emerald-400 font-mono mb-2 flex items-center gap-1.5 border-b border-slate-850 pb-2">
+                      <span>👤</span>
+                      Manual Player Insertion
+                    </h3>
+                    <p className="text-[9.5px] text-slate-400 leading-normal mb-3.5">
+                      Register a player directly. Elder Flow Score must be **0-1000 points**. Build time must be in **seconds** (e.g. 180s).
+                    </p>
+                    
+                    <div className="space-y-2 text-[10px] font-mono">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Nickname</label>
+                          <input 
+                            type="text" 
+                            placeholder="Notch"
+                            id="manualName"
+                            className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1 text-slate-200 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Enrollment ID</label>
+                          <input 
+                            type="text" 
+                            placeholder="10-digit ID"
+                            maxLength={10}
+                            id="manualEnrollment"
+                            className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1 text-slate-200 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Score (0-1000)</label>
+                          <input 
+                            type="number" 
+                            placeholder="e.g. 850"
+                            id="manualScore"
+                            className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1 text-slate-200 focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Build Time (s)</label>
+                          <input 
+                            type="number" 
+                            placeholder="e.g. 120"
+                            id="manualTime"
+                            className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1 text-slate-200 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={async () => {
+                      const name = document.getElementById('manualName').value.trim();
+                      const enrollment = document.getElementById('manualEnrollment').value.trim();
+                      const score = document.getElementById('manualScore').value.trim();
+                      const time = document.getElementById('manualTime').value.trim();
+
+                      if (!name || !enrollment || !score || !time) {
+                        return alert('All manual player fields are required!');
+                      }
+
+                      try {
+                        const res = await fetch(`${cleanBackendUrl}/api/admin/player/create-manual`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            roomCode,
+                            displayName: name,
+                            enrollmentId: enrollment,
+                            score,
+                            totalTimeSpent: time
+                          })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                          alert(`Success! Player registered. Verification code is: ${data.verificationHash}`);
+                          document.getElementById('manualName').value = '';
+                          document.getElementById('manualEnrollment').value = '';
+                          document.getElementById('manualScore').value = '';
+                          document.getElementById('manualTime').value = '';
+                          fetchResults();
+                        } else {
+                          alert(`Error: ${data.error}`);
+                        }
+                      } catch (err) {
+                        alert('Network failure registering manual player.');
+                      }
+                    }}
+                    className="mt-3.5 w-full py-2 bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-900 text-emerald-400 rounded font-black font-mono text-[9px] uppercase tracking-widest transition-all"
+                  >
+                    ➕ Register Manual Player
+                  </button>
+                </div>
+
+                {/* Change Player Group */}
+                <div className="bg-[#212429] border border-slate-800 rounded-lg p-5 flex flex-col justify-between">
+                  <div>
+                    <h3 className="text-xs font-black uppercase tracking-wider text-sky-400 font-mono mb-2 flex items-center gap-1.5 border-b border-slate-850 pb-2">
+                      <span>🔄</span>
+                      Migrate Player Group
+                    </h3>
+                    <p className="text-[9.5px] text-slate-400 leading-normal mb-3.5">
+                      Dynamically move a registered player to a new group (`A`, `B`, or `C`). The player client syncs instantly.
+                    </p>
+
+                    <div className="space-y-3 text-[10px] font-mono">
+                      <div>
+                        <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Target Registered Player</label>
+                        <select 
+                          id="changePlayerSelect"
+                          className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none cursor-pointer"
+                        >
+                          <option value="">Select a player...</option>
+                          {roomResults.map(p => (
+                            <option key={p.playerId} value={p.playerId}>
+                              {p.displayName} (Group {p.group})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="text-[8.5px] text-slate-500 uppercase block mb-1">Assign Target Group</label>
+                        <select 
+                          id="changePlayerGroupSelect"
+                          className="w-full bg-slate-950 border border-slate-850 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none cursor-pointer"
+                        >
+                          <option value="A">Group A</option>
+                          <option value="B">Group B</option>
+                          <option value="C">Group C</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={async () => {
+                      const playerId = document.getElementById('changePlayerSelect').value;
+                      const newGroup = document.getElementById('changePlayerGroupSelect').value;
+
+                      if (!playerId) {
+                        return alert('Please select a player to switch group!');
+                      }
+
+                      try {
+                        const res = await fetch(`${cleanBackendUrl}/api/admin/player/change-group`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            roomCode,
+                            playerId,
+                            newGroup
+                          })
+                        });
+                        const data = await res.json();
+                        if (res.ok) {
+                          alert(data.message);
+                          fetchResults();
+                        } else {
+                          alert(`Error: ${data.error}`);
+                        }
+                      } catch (err) {
+                        alert('Network failure switching player group.');
+                      }
+                    }}
+                    className="mt-3.5 w-full py-2 bg-sky-950/40 hover:bg-sky-900/60 border border-sky-900 text-sky-400 rounded font-black font-mono text-[9px] uppercase tracking-widest transition-all"
+                  >
+                    ⚡ Move Player Group
                   </button>
                 </div>
 

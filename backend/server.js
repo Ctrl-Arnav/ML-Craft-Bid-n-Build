@@ -139,13 +139,13 @@ function broadcastAdminSync(roomCode) {
 io.on('connection', (socket) => {
   console.log(`🔌 Client connected: ${socket.id}`);
 
-  // 0. Admin Login & Room Connection (Validates "Aloha" Passcode)
+  // 0. Admin Login & Room Connection (Validates "aloharean" Passcode)
   socket.on('admin:join', async ({ roomCode, displayName, passcode, action }) => {
     try {
       const cleanRoomCode = roomCode.toUpperCase().trim();
       const cleanName = displayName.trim();
 
-      if (passcode !== "Aloha") {
+      if (passcode !== "aloharean") {
         socket.emit('error:adminJoin', 'Incorrect admin access passcode!');
         return;
       }
@@ -1061,6 +1061,196 @@ app.get('/api/admin/verify/:hash', async (req, res) => {
   } catch (err) {
     console.error("❌ Error verifying hash:", err);
     res.status(500).json({ error: "Could not verify credentials due to database error." });
+  }
+});
+
+// Admin manual player registration endpoint
+app.post('/api/admin/player/create-manual', async (req, res) => {
+  const { roomCode, displayName, enrollmentId, score, totalTimeSpent } = req.body;
+  
+  if (!roomCode || !displayName || !enrollmentId) {
+    return res.status(400).json({ error: 'Room code, display name, and enrollment ID are required.' });
+  }
+
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+  const cleanName = displayName.trim();
+  const cleanEnrollment = enrollmentId.trim();
+
+  // 10-digit enrollment check
+  if (!/^\d{10}$/.test(cleanEnrollment)) {
+    return res.status(400).json({ error: 'Enrollment ID must be exactly 10 digits.' });
+  }
+
+  const parsedScore = parseInt(score, 10) || 0;
+  const parsedTime = parseInt(totalTimeSpent, 10) || 0;
+
+  if (parsedScore < 0 || parsedScore > 1000) {
+    return res.status(400).json({ error: 'Elder Flow Score must be between 0 and 1000.' });
+  }
+  if (parsedTime < 0) {
+    return res.status(400).json({ error: 'Cumulative builder time must be non-negative.' });
+  }
+
+  try {
+    // Check if player or enrollment already exists in this room
+    const existingEnrollment = await Player.findOne({ roomCode: cleanRoomCode, enrollmentId: cleanEnrollment });
+    if (existingEnrollment) {
+      return res.status(400).json({ error: 'Enrollment ID already registered in this room.' });
+    }
+
+    const existingName = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
+    if (existingName) {
+      return res.status(400).json({ error: 'Display name already taken in this room.' });
+    }
+
+    // Determine group: manual players are placed in Group A by default unless roomState has other setup
+    const room = roomsState[cleanRoomCode];
+    let groupName = 'A';
+    if (room) {
+      // Find group with fewest players
+      const groupCounts = {};
+      for (const g of Object.keys(room.groups)) {
+        groupCounts[g] = room.groups[g].players.length;
+      }
+      // Pick group with minimum player count
+      groupName = Object.keys(groupCounts).reduce((a, b) => groupCounts[a] <= groupCounts[b] ? a : b);
+    }
+
+    // Generate random player ID
+    const randomId = Math.floor(1000 + Math.random() * 9000);
+    const playerId = `PLAYER-MANUAL-${randomId}-${groupName}`;
+
+    // Compute unique verification hash
+    const finalScoreNormalized = parsedScore / 1000;
+    const hashInput = `${cleanName}_${cleanEnrollment}_${finalScoreNormalized}_${parsedTime}`;
+    const verificationHash = calculateFNV1a8Digit(hashInput);
+
+    const playerDoc = new Player({
+      roomCode: cleanRoomCode,
+      displayName: cleanName,
+      enrollmentId: cleanEnrollment,
+      playerId,
+      group: groupName,
+      currentScore: parsedScore,
+      totalTimeSpent: parsedTime,
+      isRoundSubmitted: true,
+      verificationHash,
+      hashGeneratedAt: new Date()
+    });
+
+    await playerDoc.save();
+
+    // Add to in-memory room state list if initialized
+    if (room && room.groups[groupName]) {
+      if (!room.groups[groupName].players.includes(playerId)) {
+        room.groups[groupName].players.push(playerId);
+      }
+    }
+
+    console.log(`👤 Manually registered player ${cleanName} in Group ${groupName} (Hash: ${verificationHash})`);
+
+    // Broadcast updates
+    await broadcastLeaderboard(cleanRoomCode);
+    broadcastAdminSync(cleanRoomCode);
+
+    res.json({ 
+      message: `Successfully registered ${cleanName} in Group ${groupName}!`, 
+      playerId, 
+      groupName, 
+      verificationHash 
+    });
+
+  } catch (err) {
+    console.error("❌ Manual player registration error:", err);
+    res.status(500).json({ error: 'Server database error while registering player.' });
+  }
+});
+
+// Admin dynamic group switching endpoint
+app.post('/api/admin/player/change-group', async (req, res) => {
+  const { roomCode, playerId, newGroup } = req.body;
+
+  if (!roomCode || !playerId || !newGroup) {
+    return res.status(400).json({ error: 'Room code, player ID, and target group are required.' });
+  }
+
+  const cleanRoomCode = roomCode.toUpperCase().trim();
+  const targetPlayerId = playerId.trim();
+  const targetGroup = newGroup.toUpperCase().trim();
+
+  if (!['A', 'B', 'C'].includes(targetGroup)) {
+    return res.status(400).json({ error: 'Group must be A, B, or C.' });
+  }
+
+  try {
+    const playerDoc = await Player.findOne({ roomCode: cleanRoomCode, playerId: targetPlayerId });
+    if (!playerDoc) {
+      return res.status(404).json({ error: 'Player not found in this room.' });
+    }
+
+    const oldGroup = playerDoc.group;
+    if (oldGroup === targetGroup) {
+      return res.json({ message: `Player is already in Group ${targetGroup}.` });
+    }
+
+    // Update in Database
+    playerDoc.group = targetGroup;
+    await playerDoc.save();
+
+    // Update in-memory roomState
+    const room = roomsState[cleanRoomCode];
+    if (room) {
+      // Remove from old group memory list
+      if (room.groups[oldGroup]) {
+        room.groups[oldGroup].players = room.groups[oldGroup].players.filter(p => p !== targetPlayerId);
+      }
+      // Add to new group memory list
+      if (room.groups[targetGroup]) {
+        if (!room.groups[targetGroup].players.includes(targetPlayerId)) {
+          room.groups[targetGroup].players.push(targetPlayerId);
+        }
+      }
+    }
+
+    console.log(`🔄 Switched player ${playerDoc.displayName} from Group ${oldGroup} to Group ${targetGroup}`);
+
+    // Dynamic socket channel migration
+    const sockets = await io.in(cleanRoomCode).fetchSockets();
+    const playerSocket = sockets.find(s => s.playerId === targetPlayerId);
+
+    if (playerSocket) {
+      playerSocket.leave(`${cleanRoomCode}-${oldGroup}`);
+      playerSocket.join(`${cleanRoomCode}-${targetGroup}`);
+      playerSocket.group = targetGroup;
+
+      // Sync player client instantly to refresh group state
+      playerSocket.emit('room:sync', {
+        playerId: playerDoc.playerId,
+        displayName: playerDoc.displayName,
+        enrollmentId: playerDoc.enrollmentId,
+        group: targetGroup,
+        emeraldBalance: playerDoc.emeraldBalance,
+        ownedToolIds: playerDoc.ownedToolIds,
+        gridState: playerDoc.gridState,
+        roomStatus: room ? room.status : 'lobby',
+        activeRound: room ? room.activeRound : 0,
+        isRoundSubmitted: playerDoc.isRoundSubmitted
+      });
+      
+      console.log(`🔌 Dynamic socket migration complete for ${playerDoc.displayName} to Group ${targetGroup}`);
+    }
+
+    // Broadcast updates
+    await broadcastLeaderboard(cleanRoomCode);
+    broadcastAdminSync(cleanRoomCode);
+
+    res.json({ 
+      message: `Successfully switched ${playerDoc.displayName} from Group ${oldGroup} to Group ${targetGroup}!` 
+    });
+
+  } catch (err) {
+    console.error("❌ Group switching error:", err);
+    res.status(500).json({ error: 'Server database error while switching player group.' });
   }
 });
 
