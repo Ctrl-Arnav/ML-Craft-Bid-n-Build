@@ -66,6 +66,51 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
 
   const [toolToInject, setToolToInject] = useState('raw_gold_ore');
 
+  // --- RESULTS & VERIFICATION STATE VARIABLES ---
+  const [roomResults, setRoomResults] = useState([]);
+  const [searchHash, setSearchHash] = useState('');
+  const [verifiedPlayer, setVerifiedPlayer] = useState(null);
+  const [verifyError, setVerifyError] = useState(null);
+
+  const fetchResults = async () => {
+    try {
+      const res = await fetch(`${backendUrl}/api/admin/room/${roomCode}/results`);
+      if (res.ok) {
+        const data = await res.json();
+        setRoomResults(data.results || []);
+      }
+    } catch (err) {
+      console.error("Error fetching results:", err);
+    }
+  };
+
+  const handleVerifyHash = async (e) => {
+    if (e) e.preventDefault();
+    if (!searchHash.trim()) return;
+    try {
+      const res = await fetch(`${backendUrl}/api/admin/verify/${searchHash.trim()}`);
+      if (res.ok) {
+        const data = await res.json();
+        setVerifiedPlayer(data);
+        setVerifyError(null);
+      } else {
+        const data = await res.json();
+        setVerifyError(data.error || 'Verification hash not found.');
+        setVerifiedPlayer(null);
+      }
+    } catch (err) {
+      setVerifyError('Database lookup failure.');
+      setVerifiedPlayer(null);
+    }
+  };
+
+  // Auto-fetch results when results tab is loaded
+  useEffect(() => {
+    if (activeTab === 'results' && roomCode) {
+      fetchResults();
+    }
+  }, [activeTab, roomCode]);
+
   // --- CONNECT SOCKETS FOR REAL-TIME SYNC ---
   const handleAdminJoin = (e) => {
     if (e) e.preventDefault();
@@ -339,6 +384,17 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
             >
               <Radio className="w-3.5 h-3.5" />
               Player Simulation Preview
+            </button>
+            <button
+              onClick={() => setActiveTab('results')}
+              className={`px-4 py-1.5 text-xs font-black uppercase font-mono rounded flex items-center gap-1.5 transition-all ${
+                activeTab === 'results'
+                  ? 'bg-yellow-950/40 text-yellow-400 border border-yellow-900/50 shadow-inner'
+                  : 'text-slate-400 border border-transparent hover:text-slate-200'
+              }`}
+            >
+              <Shield className="w-3.5 h-3.5" />
+              Results & Verification
             </button>
           </div>
 
@@ -714,6 +770,142 @@ export default function AdminPanel({ backendUrl = 'http://localhost:3001' }) {
                     </div>
                   </div>
                 </aside>
+
+              </div>
+
+            </div>
+          )}
+
+          {/* ==========================================
+          TAB 3: RESULTS & HASH VERIFICATION
+          ========================================== */}
+          {activeTab === 'results' && (
+            <div className="p-6 max-w-5xl mx-auto space-y-6">
+              
+              <div className="flex items-center justify-between border-b-2 border-slate-800 pb-3 font-mono">
+                <div>
+                  <h2 className="text-lg font-black tracking-wider text-yellow-400 uppercase flex items-center gap-2">
+                    🏆 Room Results & Verification Logs
+                  </h2>
+                  <p className="text-[10px] text-slate-500 font-extrabold uppercase tracking-wide mt-0.5">
+                    Search and validate player completion hashes using MongoDB
+                  </p>
+                </div>
+                <button
+                  onClick={fetchResults}
+                  className="px-4 py-1.5 bg-slate-950 hover:bg-slate-900 border border-slate-800 text-slate-350 rounded font-black text-[9px] uppercase tracking-wider flex items-center gap-1.5 transition active:scale-95 text-slate-100"
+                >
+                  <RotateCw className="w-3.5 h-3.5 text-slate-400" />
+                  Refresh Results
+                </button>
+              </div>
+
+              {/* Grid with Results & Hash Verification searcher */}
+              <div className="grid grid-cols-3 gap-6 items-start font-mono text-xs">
+                
+                {/* 1. Results List (Left 2 cols) */}
+                <div className="col-span-2 bg-[#212429] border border-slate-800 rounded-lg p-5 space-y-4">
+                  <h3 className="text-xs font-black uppercase text-slate-200 border-b border-slate-850 pb-2">
+                    📊 Leaderboard Results ({roomResults.length} registered)
+                  </h3>
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-[10px] leading-relaxed border-collapse select-text">
+                      <thead>
+                        <tr className="text-slate-500 uppercase font-black border-b border-slate-800 text-[8.5px]">
+                          <th className="py-2 pr-2">Rank</th>
+                          <th className="py-2 px-2">Nickname</th>
+                          <th className="py-2 px-2">Enrollment</th>
+                          <th className="py-2 px-2">Grp</th>
+                          <th className="py-2 px-2 text-center">Score</th>
+                          <th className="py-2 px-2 text-center">Time</th>
+                          <th className="py-2 px-2">Verification Code</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-850">
+                        {roomResults.map((p, idx) => (
+                          <tr key={idx} className="hover:bg-slate-900/35 text-slate-300">
+                            <td className="py-2 pr-2 font-bold text-yellow-500">{idx + 1}</td>
+                            <td className="py-2 px-2 font-bold text-white truncate max-w-[80px]">{p.displayName}</td>
+                            <td className="py-2 px-2 font-semibold text-slate-350">{p.enrollmentId}</td>
+                            <td className="py-2 px-2"><span className="bg-slate-950/40 px-1.5 py-0.5 rounded border border-slate-800 text-slate-400 text-[8px] font-black">{p.group}</span></td>
+                            <td className="py-2 px-2 text-center font-black text-emerald-400">{p.score}</td>
+                            <td className="py-2 px-2 text-center font-extrabold text-sky-400">{p.totalTimeSpent}s</td>
+                            <td className="py-2 px-2 text-yellow-300 font-bold select-all bg-slate-950/15 font-mono px-2 py-0.5 rounded text-[9px] truncate max-w-[90px]">{p.verificationHash || 'ROUND IN PROGRESS'}</td>
+                          </tr>
+                        ))}
+                        {roomResults.length === 0 && (
+                          <tr>
+                            <td colSpan="7" className="py-6 text-center text-slate-500 italic uppercase">
+                              No players found in this room yet. Enter lobby to start!
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* 2. Verification lookup searcher (Right 1 col) */}
+                <div className="bg-[#212429] border border-slate-800 rounded-lg p-5 space-y-4">
+                  <h3 className="text-xs font-black uppercase text-slate-200 border-b border-slate-850 pb-2">
+                    🔍 Authenticator Lookup
+                  </h3>
+                  
+                  <form onSubmit={handleVerifyHash} className="space-y-3">
+                    <label className="text-[8.5px] text-slate-500 font-black uppercase block tracking-wider">Type Verification Hash</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={searchHash}
+                        onChange={(e) => setSearchHash(e.target.value.toUpperCase())}
+                        placeholder="8-DIGIT HEX CODE"
+                        maxLength={8}
+                        className="flex-1 bg-slate-950 border-2 border-slate-800 focus:border-yellow-500 rounded px-3 py-1.5 text-xs text-white focus:outline-none uppercase font-bold tracking-widest text-center"
+                      />
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 bg-yellow-600 hover:bg-yellow-500 active:scale-95 text-slate-950 font-black rounded uppercase text-[9px] tracking-wider transition-all"
+                      >
+                        Verify
+                      </button>
+                    </div>
+                  </form>
+
+                  {verifyError && (
+                    <div className="p-3 bg-red-950/20 border border-red-900 rounded text-red-400 text-[10px] text-center uppercase font-bold leading-relaxed">
+                      🚨 {verifyError}
+                    </div>
+                  )}
+
+                  {verifiedPlayer && (
+                    <div className="p-4 bg-emerald-950/25 border-2 border-emerald-800/80 rounded-lg text-slate-300 space-y-3 relative overflow-hidden shadow-inner text-left font-sans">
+                      <div className="absolute top-2 right-2 text-emerald-500 font-black text-[7px] border border-emerald-800 px-1.5 rounded uppercase tracking-wider">
+                        ✔ VALID
+                      </div>
+                      <div className="border-b border-emerald-900 pb-2">
+                        <span className="text-[7.5px] text-slate-500 uppercase font-black tracking-wide block">Student Name</span>
+                        <span className="text-sm font-bold text-white">{verifiedPlayer.displayName}</span>
+                        <span className="text-[8.5px] text-slate-400 block font-semibold">Enrollment: {verifiedPlayer.enrollmentId}</span>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2 text-center text-[9px]">
+                        <div className="bg-slate-950/30 p-1.5 rounded border border-slate-850">
+                          <span className="text-slate-500 block text-[6.5px] uppercase font-bold font-mono">Flow Score</span>
+                          <span className="text-emerald-400 font-black text-[11px] block mt-0.5 font-mono">{verifiedPlayer.score}</span>
+                        </div>
+                        <div className="bg-slate-950/30 p-1.5 rounded border border-slate-850">
+                          <span className="text-slate-500 block text-[6.5px] uppercase font-bold font-mono">Total Time</span>
+                          <span className="text-sky-400 font-black text-[11px] block mt-0.5 font-mono">{verifiedPlayer.totalTimeSpent}s</span>
+                        </div>
+                      </div>
+                      <div className="text-[7.5px] text-slate-500 font-semibold border-t border-emerald-900/60 pt-2 font-mono">
+                        <span className="block">Room: {verifiedPlayer.roomCode} | Group {verifiedPlayer.group}</span>
+                        <span className="block mt-0.5">Verified At: {verifiedPlayer.hashGeneratedAt ? new Date(verifiedPlayer.hashGeneratedAt).toLocaleString() : 'N/A'}</span>
+                      </div>
+                    </div>
+                  )}
+
+                </div>
 
               </div>
 

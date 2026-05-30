@@ -49,14 +49,18 @@ export default function App() {
   // --- CONNECTION & PLAYER LOBBY STATE ---
   const [roomCode, setRoomCode] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [enrollmentId, setEnrollmentId] = useState('');
   const [isJoined, setIsJoined] = useState(false);
+  const [isRoundSubmitted, setIsRoundSubmitted] = useState(false);
   const [playerProfile, setPlayerProfile] = useState({
     playerId: '',
     displayName: '',
+    enrollmentId: '',
     group: 'A',
     emeraldBalance: 1000,
     ownedToolIds: ['cobblestone_sample', 'axe_blueprint', 'pickaxe_blueprint', 'sword_blueprint', 'shovel_blueprint', 'standard_crafting_table', 'wooden_chest'],
-    activeRound: 1
+    activeRound: 1,
+    totalTimeSpent: 0
   });
   
   const [socket, setSocket] = useState(null);
@@ -79,6 +83,17 @@ export default function App() {
   const [builderTimeLeft, setBuilderTimeLeft] = useState(null);
   const [cooldownEndsAt, setCooldownEndsAt] = useState(null);
   const [cooldownTimeLeft, setCooldownTimeLeft] = useState(null);
+
+  // Client-side FNV-1a 32-bit unique hash generator
+  const generate8DigitHash = (name, enrollment, score, totalTime) => {
+    const payload = `${name}_${enrollment}_${score}_${totalTime}`;
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < payload.length; i++) {
+      hash ^= payload.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).toUpperCase().padStart(8, '0');
+  };
 
   // Sound/UX alert callbacks
   const playOutbidSound = () => {
@@ -106,25 +121,30 @@ export default function App() {
   // --- CONNECT SOCKETS ---
   const handleJoinLobby = (e) => {
     if (e) e.preventDefault();
-    if (!roomCode.trim() || !displayName.trim()) return alert('Please input valid room code and display name!');
+    if (!roomCode.trim() || !displayName.trim() || !/^\d{10}$/.test(enrollmentId.trim())) {
+      return alert('Please input valid room code, nickname, and exactly 10-digit Enrollment ID!');
+    }
 
     const newSocket = io(backendUrl);
 
     newSocket.on('connect', () => {
       console.log('🌱 Connected to stateful WebSocket server');
-      newSocket.emit('room:join', { roomCode, displayName });
+      newSocket.emit('room:join', { roomCode, displayName, enrollmentId });
     });
 
     newSocket.on('room:sync', (syncData) => {
       setPlayerProfile({
         playerId: syncData.playerId,
         displayName: syncData.displayName,
+        enrollmentId: syncData.enrollmentId,
         group: syncData.group,
         emeraldBalance: syncData.emeraldBalance,
         ownedToolIds: syncData.ownedToolIds,
-        activeRound: syncData.activeRound
+        activeRound: syncData.activeRound,
+        totalTimeSpent: syncData.totalTimeSpent || 0
       });
       setRoomStatus(syncData.roomStatus);
+      setIsRoundSubmitted(!!syncData.isRoundSubmitted);
       if (syncData.gridState) {
         setGrid(syncData.gridState);
       }
@@ -149,12 +169,18 @@ export default function App() {
       setActiveTab('auction');
       setNotificationAlert(true);
       setSelectedCellIndex(null);
+      setIsRoundSubmitted(false);
+      setPlayerProfile(prev => ({
+        ...prev,
+        totalTimeSpent: 0
+      }));
     });
 
     newSocket.on('transition:auctionStarted', (data) => {
       setRoomStatus('auction');
       setActiveTab('auction');
       setNotificationAlert(true);
+      setIsRoundSubmitted(false);
       setPlayerProfile(prev => ({
         ...prev,
         activeRound: data.activeRound
@@ -174,12 +200,24 @@ export default function App() {
       setActiveTab('builder');
       setNotificationAlert(true);
       setBuilderEndsAt(data.endsAt);
+      setIsRoundSubmitted(false);
     });
 
     newSocket.on('transition:builderEnded', () => {
       // Auto submit pipeline grid scan
       setRoomStatus('cooldown');
-      triggerPipelineSubmit();
+      setIsRoundSubmitted(true);
+      triggerPipelineSubmit(true);
+    });
+
+    newSocket.on('pipeline:submitted', (data) => {
+      setIsRoundSubmitted(!!data.isRoundSubmitted);
+      if (data.totalTimeSpent !== undefined) {
+        setPlayerProfile(prev => ({
+          ...prev,
+          totalTimeSpent: data.totalTimeSpent
+        }));
+      }
     });
 
     newSocket.on('error:join', (msg) => {
@@ -282,19 +320,22 @@ export default function App() {
 
   // Sync auto submit pipeline scores when grid changes
   useEffect(() => {
-    if (socket && isJoined && roomStatus === 'builder') {
+    if (socket && isJoined && roomStatus === 'builder' && !isRoundSubmitted) {
       socket.emit('pipeline:submit', {
         gridState: grid,
         score: validationErrors.length === 0 ? scores.totalScore : 0
       });
     }
-  }, [grid, scores, validationErrors, socket, isJoined, roomStatus]);
+  }, [grid, scores, validationErrors, socket, isJoined, roomStatus, isRoundSubmitted]);
 
-  const triggerPipelineSubmit = () => {
+  const triggerPipelineSubmit = (isFinal = false) => {
     if (socket) {
+      const timeSpent = isFinal ? Math.max(0, 360 - (builderTimeLeft || 0)) : 360;
       socket.emit('pipeline:submit', {
         gridState: grid,
-        score: validationErrors.length === 0 ? scores.totalScore : 0
+        score: validationErrors.length === 0 ? scores.totalScore : 0,
+        roundTimeSpent: timeSpent,
+        isFinal
       });
     }
   };
@@ -435,17 +476,26 @@ export default function App() {
 
   // Drag and Drop handlers
   const handleDragStartFromInventory = (e, toolId) => {
+    if (isRoundSubmitted) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData('toolId', toolId);
     e.dataTransfer.setData('source', 'inventory');
   };
 
   const handleDragStartFromGrid = (e, cellIndex) => {
+    if (isRoundSubmitted) {
+      e.preventDefault();
+      return;
+    }
     e.dataTransfer.setData('sourceIndex', cellIndex.toString());
     e.dataTransfer.setData('source', 'grid');
   };
 
   const handleDropOnGrid = (e, targetIndex) => {
     e.preventDefault();
+    if (isRoundSubmitted) return;
     const source = e.dataTransfer.getData('source');
     
     if (source === 'inventory') {
@@ -481,7 +531,7 @@ export default function App() {
 
   // Trash bin deletion
   const handleDeleteSelected = () => {
-    if (selectedCellIndex === null) return;
+    if (isRoundSubmitted || selectedCellIndex === null) return;
     const newGrid = [...grid];
     newGrid[selectedCellIndex] = null;
     setGrid(newGrid);
@@ -525,28 +575,39 @@ export default function App() {
 
           <div className="space-y-4 font-mono text-xs text-left">
             <div>
-              <label className="text-[10px] text-slate-900 font-black uppercase tracking-wider block mb-1.5">Game Room Code</label>
-              <input
-                type="text"
-                value={roomCode}
-                onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
-                placeholder="e.g. ARENA99"
-                required
-                className="w-full bg-slate-950 border-2 border-slate-900 focus:border-emerald-600 rounded px-4 py-2.5 text-xs text-white uppercase focus:outline-none tracking-widest font-bold"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-900 font-black uppercase tracking-wider block mb-1.5">Your Player Nickname</label>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(e) => setDisplayName(e.target.value)}
-                placeholder="e.g. Notch"
-                maxLength={12}
-                required
-                className="w-full bg-slate-950 border-2 border-slate-900 focus:border-emerald-600 rounded px-4 py-2.5 text-xs text-white focus:outline-none font-bold"
-              />
-            </div>
+               <label className="text-[10px] text-slate-900 font-black uppercase tracking-wider block mb-1.5">Game Room Code</label>
+               <input
+                 type="text"
+                 value={roomCode}
+                 onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+                 placeholder="e.g. ARENA99"
+                 required
+                 className="w-full bg-slate-950 border-2 border-slate-900 focus:border-emerald-600 rounded px-4 py-2.5 text-xs text-white uppercase focus:outline-none tracking-widest font-bold"
+               />
+             </div>
+             <div>
+               <label className="text-[10px] text-slate-900 font-black uppercase tracking-wider block mb-1.5">Your Player Nickname</label>
+               <input
+                 type="text"
+                 value={displayName}
+                 onChange={(e) => setDisplayName(e.target.value)}
+                 placeholder="e.g. Notch"
+                 maxLength={12}
+                 required
+                 className="w-full bg-slate-950 border-2 border-slate-900 focus:border-emerald-600 rounded px-4 py-2.5 text-xs text-white focus:outline-none font-bold"
+               />
+             </div>
+             <div>
+               <label className="text-[10px] text-slate-900 font-black uppercase tracking-wider block mb-1.5">Your 10-Digit Enrollment ID</label>
+               <input
+                 type="text"
+                 value={enrollmentId}
+                 onChange={(e) => setEnrollmentId(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                 placeholder="e.g. 1234567890"
+                 required
+                 className="w-full bg-slate-950 border-2 border-slate-900 focus:border-emerald-600 rounded px-4 py-2.5 text-xs text-white focus:outline-none tracking-widest font-bold font-mono"
+               />
+             </div>
           </div>
 
           <button
@@ -556,6 +617,76 @@ export default function App() {
             Enter Crafting Station Lobby ➔
           </button>
         </form>
+      </div>
+    );
+  }
+
+  // Intercept finished phase to display premium celebration hash screen
+  if (roomStatus === 'finished') {
+    const finalScoreNormalized = (validationErrors.length === 0 ? scores.totalScore : 0) / 1000;
+    const verificationHash = generate8DigitHash(
+      playerProfile.displayName,
+      playerProfile.enrollmentId,
+      finalScoreNormalized,
+      playerProfile.totalTimeSpent
+    );
+
+    return (
+      <div className="min-h-screen w-full bg-minecraft-stone flex items-center justify-center p-6 text-slate-100 select-none font-sans">
+        <div className="max-w-xl w-full bg-[#d2a06c] border-4 border-slate-950 p-8 rounded-lg shadow-2xl space-y-6 text-slate-900 text-center font-mono relative overflow-hidden">
+          <div className="absolute inset-0 bg-gradient-to-b from-yellow-500/10 to-emerald-500/10 pointer-events-none"></div>
+          <div className="space-y-2">
+            <h1 className="text-3xl font-black tracking-wider uppercase text-slate-950 drop-shadow-md">
+              🏆 QUEST COMPLETED!
+            </h1>
+            <p className="text-xs text-slate-800 font-extrabold uppercase tracking-widest">
+              The Elder Scroll is Secured
+            </p>
+          </div>
+
+          <div className="bg-slate-950/90 text-white rounded-lg border-2 border-slate-950 p-6 space-y-4 shadow-inner">
+            <div className="border-b border-slate-800 pb-3">
+              <span className="text-[10px] text-slate-400 font-black tracking-widest uppercase block">Adventurer Name</span>
+              <span className="text-xl font-bold text-yellow-300 mt-1 block">{playerProfile.displayName}</span>
+              <span className="text-[9px] text-slate-500 mt-0.5 block uppercase">Enrollment ID: {playerProfile.enrollmentId} | Group {playerProfile.group}</span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 py-2">
+              <div className="bg-slate-900 border border-slate-800 p-3 rounded">
+                <span className="text-[9px] text-slate-400 font-black tracking-wider uppercase block">Final Flow Score</span>
+                <span className="text-2xl font-black text-emerald-400 mt-1 block">
+                  {validationErrors.length === 0 ? scores.totalScore : 0}
+                </span>
+              </div>
+              <div className="bg-slate-900 border border-slate-800 p-3 rounded">
+                <span className="text-[9px] text-slate-400 font-black tracking-wider uppercase block">Cumulative Time</span>
+                <span className="text-2xl font-black text-sky-400 mt-1 block">
+                  {playerProfile.totalTimeSpent}s
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-yellow-950/20 border-2 border-yellow-700/50 rounded-lg p-4 text-center space-y-2">
+              <span className="text-[9px] text-yellow-400 font-black tracking-widest uppercase block">🛡 Deterministic Verification Hash 🛡</span>
+              <div className="text-2xl font-black text-yellow-300 tracking-widest drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)] select-all selection:bg-yellow-800 select-text cursor-pointer" title="Double click to copy code">
+                {verificationHash}
+              </div>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(verificationHash);
+                  alert("Verification hash copied to clipboard!");
+                }}
+                className="px-4 py-1.5 bg-yellow-600 hover:bg-yellow-500 active:scale-95 text-slate-950 font-black text-[9px] uppercase rounded border-2 border-slate-950 tracking-wider transition-all"
+              >
+                📋 Copy Verification Hash
+              </button>
+            </div>
+          </div>
+
+          <div className="text-[9px] text-slate-700 leading-relaxed font-bold uppercase">
+            📌 Present this 8-digit unique code to the match administrator to verify and validate your pipeline completion credentials.
+          </div>
+        </div>
       </div>
     );
   }
@@ -753,13 +884,15 @@ export default function App() {
                       return (
                         <div
                           key={`placed-block-${idx}`}
-                          draggable
+                          draggable={!isRoundSubmitted}
                           onDragStart={(e) => handleDragStartFromGrid(e, idx)}
                           onClick={(e) => {
                             e.stopPropagation();
                             handleCellClick(idx);
                           }}
-                          className={`absolute p-1 flex items-center justify-center transition-transform hover:scale-105 pointer-events-auto cursor-grab active:cursor-grabbing ${
+                          className={`absolute p-1 flex items-center justify-center transition-transform hover:scale-105 pointer-events-auto ${
+                            isRoundSubmitted ? 'cursor-default' : 'cursor-grab active:cursor-grabbing'
+                          } ${
                             selectedCellIndex === idx ? 'scale-105' : ''
                           }`}
                           style={{
@@ -845,6 +978,25 @@ export default function App() {
                   </div>
                   <span className="text-[8px] text-slate-500 mt-1 block leading-tight">Strict 6-Slot Sequential Validation</span>
                 </div>
+
+                {roomStatus === 'builder' && (
+                  <button
+                    onClick={() => {
+                      if (confirm("Are you sure you want to finalize and lock your pipeline for this round? You will not be able to make any further edits!")) {
+                        triggerPipelineSubmit(true);
+                        setIsRoundSubmitted(true);
+                      }
+                    }}
+                    disabled={isRoundSubmitted}
+                    className={`w-full py-2.5 rounded border-2 border-slate-950 font-black uppercase text-xs tracking-wider transition-all duration-200 ${
+                      isRoundSubmitted
+                        ? 'bg-slate-800 text-slate-500 cursor-not-allowed border-slate-700'
+                        : 'bg-gradient-to-r from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white shadow-[0_0_12px_rgba(16,185,129,0.3)] animate-pulse'
+                    }`}
+                  >
+                    {isRoundSubmitted ? '🔒 Locked & Submitted' : '✔ Finalize & Submit ➔'}
+                  </button>
+                )}
 
                 {/* Progress bars details */}
                 <div className="space-y-3">
@@ -990,49 +1142,63 @@ export default function App() {
       {/* 3. INVENTORY SHELF Tray (Oak Wooden Texture Panel) */}
       {activeTab === 'builder' && (
         <footer className="h-[18vh] bg-[#d2a06c] border-t-4 border-slate-700 p-2 flex flex-col shrink-0 z-20 shadow-inner text-slate-900 select-none">
-          <div className="flex items-center justify-between mb-1.5 px-2 shrink-0">
-            <span className="text-xs font-black uppercase text-slate-950 tracking-wider">📦 Oakwood Trading Shelf (Drag Blocks)</span>
-            <span className="text-[9px] text-slate-700 font-bold">💡 Drag blocks onto the 9x9 grass field grid</span>
-          </div>
+          {isRoundSubmitted ? (
+            <div className="flex-1 flex flex-col items-center justify-center bg-slate-950/90 text-white border-2 border-[#b47c0b] rounded p-4 text-center font-mono relative overflow-hidden shadow-2xl">
+              <div className="absolute inset-0 bg-gradient-to-r from-yellow-950/20 to-red-950/20 pointer-events-none"></div>
+              <h3 className="text-yellow-400 font-black uppercase tracking-widest text-sm flex items-center gap-2">
+                <span>🔒 PIPELINE LOCKED & SUBMITTED</span>
+              </h3>
+              <p className="text-[10px] text-slate-300 mt-1 max-w-lg leading-relaxed uppercase">
+                Your crafting stations are secured. Grid modifications are disabled until the next round starts.
+              </p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-1.5 px-2 shrink-0">
+                <span className="text-xs font-black uppercase text-slate-950 tracking-wider">📦 Oakwood Trading Shelf (Drag Blocks)</span>
+                <span className="text-[9px] text-slate-700 font-bold">💡 Drag blocks onto the 9x9 grass field grid</span>
+              </div>
 
-          <div className="flex-1 overflow-x-auto overflow-y-hidden flex items-center gap-2 pb-1 px-1">
-            {TOOLS.filter(tool => tool.tier === 'Basic' || playerProfile.ownedToolIds.includes(tool.id)).map(tool => {
-              const tierStyle = TIER_STYLES[tool.tier] || TIER_STYLES.Basic;
-              const isUrl = tool.icon && (tool.icon.startsWith('http') || tool.icon.endsWith('.webp') || tool.icon.includes('/'));
-              const sizeClass = 'w-[90%] h-[90%]';
+              <div className="flex-1 overflow-x-auto overflow-y-hidden flex items-center gap-2 pb-1 px-1">
+                {TOOLS.filter(tool => tool.tier === 'Basic' || playerProfile.ownedToolIds.includes(tool.id)).map(tool => {
+                  const tierStyle = TIER_STYLES[tool.tier] || TIER_STYLES.Basic;
+                  const isUrl = tool.icon && (tool.icon.startsWith('http') || tool.icon.endsWith('.webp') || tool.icon.includes('/'));
+                  const sizeClass = 'w-[90%] h-[90%]';
 
-              return (
-                <div
-                  key={tool.id}
-                  draggable
-                  onDragStart={(e) => handleDragStartFromInventory(e, tool.id)}
-                  onClick={() => setSelectedTool(tool)}
-                  className={`h-full min-w-[95px] max-w-[95px] border-2 border-slate-950 rounded flex flex-col p-1.5 text-left cursor-grab active:cursor-grabbing hover:brightness-110 hover:scale-105 transition-all shadow-md shrink-0 relative overflow-hidden text-white ${tierStyle.baseBg} ${tierStyle.border} ${tierStyle.glow}`}
-                >
-                  <div className="flex items-center justify-between text-[7.5px] text-slate-200 font-extrabold leading-none shrink-0 z-10">
-                    <span className="uppercase opacity-85 truncate max-w-[45px]">{tool.type}</span>
-                    <span className="uppercase">{tool.tier}</span>
-                  </div>
+                  return (
+                    <div
+                      key={tool.id}
+                      draggable
+                      onDragStart={(e) => handleDragStartFromInventory(e, tool.id)}
+                      onClick={() => setSelectedTool(tool)}
+                      className={`h-full min-w-[95px] max-w-[95px] border-2 border-slate-950 rounded flex flex-col p-1.5 text-left cursor-grab active:cursor-grabbing hover:brightness-110 hover:scale-105 transition-all shadow-md shrink-0 relative overflow-hidden text-white ${tierStyle.baseBg} ${tierStyle.border} ${tierStyle.glow}`}
+                    >
+                      <div className="flex items-center justify-between text-[7.5px] text-slate-200 font-extrabold leading-none shrink-0 z-10">
+                        <span className="uppercase opacity-85 truncate max-w-[45px]">{tool.type}</span>
+                        <span className="uppercase">{tool.tier}</span>
+                      </div>
 
-                  <div className="w-10 h-10 mx-auto my-1 flex items-center justify-center shrink-0">
-                    {isUrl ? (
-                      <img 
-                        src={tool.icon} 
-                        alt={tool.name} 
-                        className={`${sizeClass} object-contain select-none pointer-events-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.4)]`} 
-                      />
-                    ) : (
-                      <span className="text-xl select-none">{tool.icon}</span>
-                    )}
-                  </div>
+                      <div className="w-10 h-10 mx-auto my-1 flex items-center justify-center shrink-0">
+                        {isUrl ? (
+                          <img 
+                            src={tool.icon} 
+                            alt={tool.name} 
+                            className={`${sizeClass} object-contain select-none pointer-events-none drop-shadow-[0_2px_4px_rgba(0,0,0,0.4)]`} 
+                          />
+                        ) : (
+                          <span className="text-xl select-none">{tool.icon}</span>
+                        )}
+                      </div>
 
-                  <h3 className="font-extrabold text-[8.5px] text-slate-100 truncate text-center mt-auto w-full px-0.5 bg-slate-950/40 rounded leading-tight z-10 pointer-events-none">
-                    {tool.name}
-                  </h3>
-                </div>
-              );
-            })}
-          </div>
+                      <h3 className="font-extrabold text-[8.5px] text-slate-100 truncate text-center mt-auto w-full px-0.5 bg-slate-950/40 rounded leading-tight z-10 pointer-events-none">
+                        {tool.name}
+                      </h3>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </footer>
       )}
 

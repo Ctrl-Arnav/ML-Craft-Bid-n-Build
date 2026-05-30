@@ -86,6 +86,39 @@ const TOOL_CATALOG = {
 };
 
 // ==========================================
+// 🧬 DETERMINISTIC HASHING & VERIFICATION UTILITIES
+// ==========================================
+// Pure JavaScript implementation of 32-bit FNV-1a algorithm
+function calculateFNV1a8Digit(str) {
+  let hash = 0x811c9dc5; // FNV offset basis
+  for (let i = 0; i < str.length; i++) {
+    hash ^= str.charCodeAt(i);
+    // 32-bit integer multiplication
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).toUpperCase().padStart(8, '0');
+}
+
+async function generateRoomVerificationHashes(roomCode) {
+  try {
+    const players = await Player.find({ roomCode });
+    for (const player of players) {
+      if (!player.verificationHash) {
+        const finalScore = player.currentScore / 1000;
+        const hashInput = `${player.displayName}_${player.enrollmentId}_${finalScore}_${player.totalTimeSpent}`;
+        const hash = calculateFNV1a8Digit(hashInput);
+        player.verificationHash = hash;
+        player.hashGeneratedAt = new Date();
+        await player.save();
+        console.log(`🔑 Generated verification hash for player ${player.displayName}: ${hash}`);
+      }
+    }
+  } catch (err) {
+    console.error("❌ Error generating verification hashes:", err);
+  }
+}
+
+// ==========================================
 // CORE ADMIN SYNCHRONIZATION HELPERS
 // ==========================================
 function broadcastAdminSync(roomCode) {
@@ -180,15 +213,15 @@ io.on('connection', (socket) => {
   });
 
   // 1. Join Room & Assign Group Lobby
-  socket.on('room:join', async ({ roomCode, displayName }) => {
+  socket.on('room:join', async ({ roomCode, displayName, enrollmentId }) => {
     try {
       const cleanRoomCode = roomCode.toUpperCase().trim();
       const cleanName = displayName.trim();
+      const cleanEnrollmentId = enrollmentId ? enrollmentId.trim() : '';
 
-      // Check duplicate displayName in room
-      const existing = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
-      if (existing && !existing.isDisconnected) {
-        socket.emit('error:join', 'Display name already taken in this room.');
+      // Enrollment ID 10-digit validation
+      if (!/^\d{10}$/.test(cleanEnrollmentId)) {
+        socket.emit('error:join', 'Enrollment ID must be exactly 10 numeric digits.');
         return;
       }
 
@@ -211,23 +244,40 @@ io.on('connection', (socket) => {
 
       const room = roomsState[cleanRoomCode];
 
-      // Reconnection check
-      let playerDoc = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
+      // Reconnection check by enrollment ID
+      let playerDoc = await Player.findOne({ roomCode: cleanRoomCode, enrollmentId: cleanEnrollmentId });
       let groupName = 'A';
 
       if (playerDoc) {
+        // Verify same nickname
+        if (playerDoc.displayName !== cleanName) {
+          socket.emit('error:join', 'Enrollment ID already registered under a different display name.');
+          return;
+        }
         playerDoc.isDisconnected = false;
         playerDoc.lastActiveAt = Date.now();
         await playerDoc.save();
         groupName = playerDoc.group;
       } else {
-        // Group assignment: sequential join distribution
+        // If enrollment is new, make sure displayName is not already taken by someone else
+        const nameTaken = await Player.findOne({ roomCode: cleanRoomCode, displayName: cleanName });
+        if (nameTaken) {
+          socket.emit('error:join', 'Display name already taken in this room.');
+          return;
+        }
+
+        // Sequential Grouping assignment:
+        // - If 10 players or less join then they get put into the same group ('A').
+        // - If 11-20: distribute sequentially into ['A', 'B'].
+        // - If >= 21: distribute sequentially into ['A', 'B', 'C'].
         const activePlayersCount = await Player.countDocuments({ roomCode: cleanRoomCode });
-        const isLargeRoom = activePlayersCount >= 20; // threshold
-        
-        const groupOptions = isLargeRoom ? ['A', 'B', 'C'] : ['A', 'B'];
-        const targetIndex = activePlayersCount % groupOptions.length;
-        groupName = groupOptions[targetIndex];
+        if (activePlayersCount < 10) {
+          groupName = 'A';
+        } else if (activePlayersCount < 20) {
+          groupName = ['A', 'B'][(activePlayersCount - 10) % 2];
+        } else {
+          groupName = ['A', 'B', 'C'][(activePlayersCount - 20) % 3];
+        }
 
         // Generate custom player ID
         const randomId = Math.floor(1000 + Math.random() * 9000);
@@ -236,6 +286,7 @@ io.on('connection', (socket) => {
         playerDoc = new Player({
           roomCode: cleanRoomCode,
           displayName: cleanName,
+          enrollmentId: cleanEnrollmentId,
           playerId,
           group: groupName
         });
@@ -263,12 +314,14 @@ io.on('connection', (socket) => {
       socket.emit('room:sync', {
         playerId: playerDoc.playerId,
         displayName: playerDoc.displayName,
+        enrollmentId: playerDoc.enrollmentId,
         group: groupName,
         emeraldBalance: playerDoc.emeraldBalance,
         ownedToolIds: playerDoc.ownedToolIds,
         gridState: playerDoc.gridState,
         roomStatus: room.status,
-        activeRound: room.activeRound
+        activeRound: room.activeRound,
+        isRoundSubmitted: playerDoc.isRoundSubmitted
       });
 
       // Update global leaderboard broadcast
@@ -361,7 +414,7 @@ io.on('connection', (socket) => {
   });
 
   // 3. Grid Pipeline Submission
-  socket.on('pipeline:submit', async ({ gridState, score }) => {
+  socket.on('pipeline:submit', async ({ gridState, score, roundTimeSpent, isFinal }) => {
     const { roomCode, group, playerId, displayName } = socket;
     if (!roomCode || !playerId) return;
 
@@ -369,16 +422,34 @@ io.on('connection', (socket) => {
       const playerDoc = await Player.findOne({ playerId });
       if (!playerDoc) return;
 
+      // Backend lockout enforcement
+      if (playerDoc.isRoundSubmitted) {
+        socket.emit('error:bid', 'Pipeline is locked! You cannot edit after submitting.');
+        return;
+      }
+
       // Save state to MongoDB Atlas
       playerDoc.gridState = gridState;
       playerDoc.currentScore = score;
+
+      if (isFinal) {
+        playerDoc.isRoundSubmitted = true;
+        const timeSpent = Math.max(0, Math.min(360, parseInt(roundTimeSpent, 10) || 360));
+        playerDoc.totalTimeSpent += timeSpent;
+        console.log(`🔒 Final pipeline lockout for ${displayName}: round time spent = ${timeSpent}s. Total time = ${playerDoc.totalTimeSpent}s.`);
+      }
+
       await playerDoc.save();
 
-      console.log(`💾 Pipeline submitted by ${displayName} (Score: ${score})`);
+      console.log(`💾 Pipeline submitted by ${displayName} (Score: ${score}, isFinal: ${!!isFinal})`);
 
       // Sync global leaderboard
       await broadcastLeaderboard(roomCode);
-      socket.emit('pipeline:submitted', { score });
+      socket.emit('pipeline:submitted', { 
+        score, 
+        isRoundSubmitted: playerDoc.isRoundSubmitted,
+        totalTimeSpent: playerDoc.totalTimeSpent
+      });
       broadcastAdminSync(roomCode);
 
     } catch (err) {
@@ -502,6 +573,25 @@ setInterval(async () => {
           group.cooldownEndsAt = Date.now() + 30000;
           group.cooldownActive = true;
 
+          // Backend auto-lock for players who did not submit manually
+          const autoLockRoomAndGroup = async (rc, gn) => {
+            try {
+              const players = await Player.find({ roomCode: rc, group: gn });
+              for (const p of players) {
+                if (!p.isRoundSubmitted) {
+                  p.isRoundSubmitted = true;
+                  p.totalTimeSpent += 360; // Max round duration
+                  await p.save();
+                  console.log(`⏱️ Auto-locked player ${p.displayName} (+360s) due to round builder expiration.`);
+                }
+              }
+              await broadcastLeaderboard(rc);
+            } catch (err) {
+              console.error("❌ Error during builder expiration auto-lock:", err);
+            }
+          };
+          autoLockRoomAndGroup(roomCode, groupName);
+
           // Force auto-submit grids client-side trigger
           io.to(`${roomCode}-${groupName}`).emit('transition:builderEnded');
         }
@@ -535,6 +625,7 @@ setInterval(async () => {
         } else {
           // End match
           room.status = 'finished';
+          await generateRoomVerificationHashes(roomCode);
           io.to(roomCode).emit('match:finished');
           await GameRoom.updateOne({ roomCode }, { status: 'finished' });
         }
@@ -617,6 +708,14 @@ async function startNewAuctionRound(roomCode) {
   const room = roomsState[roomCode];
   room.status = 'auction';
 
+  // Reset round submitted state for all players in room
+  try {
+    await Player.updateMany({ roomCode }, { isRoundSubmitted: false });
+    console.log(`🔄 Reset submission lockout state for all players in room ${roomCode}`);
+  } catch (err) {
+    console.error("❌ Error resetting player submission states:", err);
+  }
+
   // Fetch next tools matching round tier catalog
   let roundTier = room.activeRound === 2 ? 'B' : 'A'; // Round 2 is B-tier, Round 3 is A-tier
   const roundTools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === roundTier);
@@ -698,6 +797,34 @@ app.post('/api/admin/match/start', async (req, res) => {
     
     const dbRoom = new GameRoom({ roomCode: cleanRoomCode, toolQueue: room.queue, status: 'round1_auction' });
     await dbRoom.save();
+
+    // Reset player profiles for match start
+    try {
+      await Player.updateMany(
+        { roomCode: cleanRoomCode },
+        { 
+          isRoundSubmitted: false, 
+          totalTimeSpent: 0, 
+          verificationHash: null, 
+          hashGeneratedAt: null,
+          currentScore: 0,
+          emeraldBalance: 1000,
+          gridState: Array(81).fill(null),
+          ownedToolIds: [
+            'cobblestone_sample',
+            'axe_blueprint',
+            'pickaxe_blueprint',
+            'sword_blueprint',
+            'shovel_blueprint',
+            'standard_crafting_table',
+            'wooden_chest'
+          ]
+        }
+      );
+      console.log(`🌱 Reset all player profiles for start of match in room ${cleanRoomCode}`);
+    } catch (err) {
+      console.error("❌ Error resetting players on match start:", err);
+    }
 
     broadcastAdminSync(cleanRoomCode);
     res.json({ message: 'Match started successfully!', queue: room.queue });
@@ -803,12 +930,63 @@ app.post('/api/admin/round/forcestart', async (req, res) => {
     await startNewAuctionRound(cleanRoomCode);
   } else {
     room.status = 'finished';
+    await generateRoomVerificationHashes(cleanRoomCode);
     io.to(cleanRoomCode).emit('match:finished');
     await GameRoom.updateOne({ roomCode: cleanRoomCode }, { status: 'finished' });
   }
 
   broadcastAdminSync(cleanRoomCode);
   res.json({ message: `Round forcefully started!` });
+});
+
+// Admin room results extraction endpoint
+app.get('/api/admin/room/:roomCode/results', async (req, res) => {
+  try {
+    const cleanRoomCode = req.params.roomCode.toUpperCase().trim();
+    const players = await Player.find({ roomCode: cleanRoomCode }).sort({ currentScore: -1 });
+    
+    const results = players.map(p => ({
+      displayName: p.displayName,
+      enrollmentId: p.enrollmentId,
+      group: p.group,
+      playerId: p.playerId,
+      score: p.currentScore,
+      finalScoreNormalized: p.currentScore / 1000,
+      totalTimeSpent: p.totalTimeSpent,
+      verificationHash: p.verificationHash,
+      hashGeneratedAt: p.hashGeneratedAt
+    }));
+
+    res.json({ roomCode: cleanRoomCode, results });
+  } catch (err) {
+    console.error("❌ Error fetching room results:", err);
+    res.status(500).json({ error: "Could not retrieve room results." });
+  }
+});
+
+// Verification lookup endpoint by unique hash code
+app.get('/api/admin/verify/:hash', async (req, res) => {
+  try {
+    const hash = req.params.hash.toUpperCase().trim();
+    const player = await Player.findOne({ verificationHash: hash });
+    if (!player) {
+      return res.status(404).json({ error: "Verification hash not found! Invalid credentials." });
+    }
+    res.json({
+      authenticated: true,
+      displayName: player.displayName,
+      enrollmentId: player.enrollmentId,
+      roomCode: player.roomCode,
+      group: player.group,
+      score: player.currentScore,
+      finalScoreNormalized: player.currentScore / 1000,
+      totalTimeSpent: player.totalTimeSpent,
+      hashGeneratedAt: player.hashGeneratedAt
+    });
+  } catch (err) {
+    console.error("❌ Error verifying hash:", err);
+    res.status(500).json({ error: "Could not verify credentials due to database error." });
+  }
 });
 
 const PORT = process.env.PORT || 3001;
