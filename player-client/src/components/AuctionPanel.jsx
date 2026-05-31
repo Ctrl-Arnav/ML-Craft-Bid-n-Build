@@ -89,7 +89,7 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
     socket.emit('auction:requestSync');
 
     // A. Sync initial auction status
-    socket.on('auction:sync', (state) => {
+    const handleSync = (state) => {
       setCurrentToolId(state.toolId);
       setBasePrice(state.basePrice);
       setCurrentBid(state.currentBid);
@@ -99,10 +99,10 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
       setAuctionQueue(state.queue || []);
       setSoldMessage(null);
       setShowCelebration(false);
-    });
+    };
 
     // B. Live Bid updates
-    socket.on('auction:bidUpdate', (data) => {
+    const handleBidUpdate = (data) => {
       setCurrentBid(data.currentBid);
       setLeadingPlayer(data.leadingPlayer);
       setEndsAt(data.endsAt);
@@ -113,10 +113,10 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
       if (data.leadingPlayer?.playerId === playerProfile.playerId) {
         setOutbidToast(null);
       }
-    });
+    };
 
     // C. Outbid notification trigger
-    socket.on('auction:outbid', (data) => {
+    const handleOutbid = (data) => {
       // Show outbid warning toast
       setOutbidToast(data.message);
       // Trigger outbid alert sound/UX callback
@@ -126,10 +126,10 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
 
       // Clear toast after 3s
       setTimeout(() => setOutbidToast(null), 3000);
-    });
+    };
 
     // D. Item Sold closure
-    socket.on('auction:sold', (data) => {
+    const handleSold = (data) => {
       setEndsAt(null);
       setTimeLeft(null);
       
@@ -146,10 +146,10 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
         setShowCelebration(false);
         setSoldMessage(null);
       }, 3000);
-    });
+    };
 
     // E. Unsold item closure
-    socket.on('auction:unsold', (data) => {
+    const handleUnsold = (data) => {
       setEndsAt(null);
       setTimeLeft(null);
       setSoldMessage(`Tool '${TOOL_CATALOG[data.toolId]?.name}' went unsold.`);
@@ -157,10 +157,10 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
       setTimeout(() => {
         setSoldMessage(null);
       }, 3000);
-    });
+    };
 
     // F. Bidding Grace Phase countdown start
-    socket.on('transition:biddingGraceStarted', (data) => {
+    const handleGraceStarted = (data) => {
       setRoomGraceEndsAt(data.endsAt);
       setAuctionQueue(data.queue || []);
       if (data.firstToolId) {
@@ -175,15 +175,22 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, roomS
       setBidHistory([]);
       setSoldMessage(null);
       setShowCelebration(false);
-    });
+    };
+
+    socket.on('auction:sync', handleSync);
+    socket.on('auction:bidUpdate', handleBidUpdate);
+    socket.on('auction:outbid', handleOutbid);
+    socket.on('auction:sold', handleSold);
+    socket.on('auction:unsold', handleUnsold);
+    socket.on('transition:biddingGraceStarted', handleGraceStarted);
 
     return () => {
-      socket.off('auction:sync');
-      socket.off('auction:bidUpdate');
-      socket.off('auction:outbid');
-      socket.off('auction:sold');
-      socket.off('auction:unsold');
-      socket.off('transition:biddingGraceStarted');
+      socket.off('auction:sync', handleSync);
+      socket.off('auction:bidUpdate', handleBidUpdate);
+      socket.off('auction:outbid', handleOutbid);
+      socket.off('auction:sold', handleSold);
+      socket.off('auction:unsold', handleUnsold);
+      socket.off('transition:biddingGraceStarted', handleGraceStarted);
     };
   }, [socket, playerProfile, onOutbid]);
 
