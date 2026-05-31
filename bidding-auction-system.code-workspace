@@ -1,0 +1,12 @@
+{
+  "folders": [
+    {
+      "name": "ML Craft Bid-n-Build",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "files.trimTrailingWhitespace": true,
+    "files.insertFinalNewline": true
+  }
+}

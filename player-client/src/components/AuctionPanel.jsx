@@ -140,9 +140,6 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
         setSoldMessage(`Sold to ${data.winner} for 💎${data.price}`);
       }
 
-      // Sync player balance locally
-      playerProfile.emeraldBalance = data.emeraldBalance;
-
       // Close notification and prep next tool after 3s
       setTimeout(() => {
         setShowCelebration(false);

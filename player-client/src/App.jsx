@@ -123,18 +123,28 @@ export default function App() {
   // --- CONNECT SOCKETS ---
   const handleJoinLobby = (e) => {
     if (e) e.preventDefault();
-    if (!roomCode.trim() || !displayName.trim() || !/^\d{10}$/.test(enrollmentId.trim())) {
+    const trimmedRoom = roomCode.toUpperCase().trim();
+    const trimmedName = displayName.trim();
+    const trimmedEnrollment = enrollmentId.trim();
+
+    if (!trimmedRoom || !trimmedName || !/^\d{10}$/.test(trimmedEnrollment)) {
       return alert('Please input valid room code, nickname, and exactly 10-digit Enrollment ID!');
     }
+
+    // Update state variables to their clean trimmed values
+    setRoomCode(trimmedRoom);
+    setDisplayName(trimmedName);
+    setEnrollmentId(trimmedEnrollment);
 
     const newSocket = io(backendUrl);
 
     newSocket.on('connect', () => {
       console.log('🌱 Connected to stateful WebSocket server');
-      newSocket.emit('room:join', { roomCode, displayName, enrollmentId });
+      newSocket.emit('room:join', { roomCode: trimmedRoom, displayName: trimmedName, enrollmentId: trimmedEnrollment });
     });
 
     newSocket.on('room:sync', (syncData) => {
+      newSocket.playerId = syncData.playerId; // Save player ID on socket metadata
       setPlayerProfile({
         playerId: syncData.playerId,
         displayName: syncData.displayName,
