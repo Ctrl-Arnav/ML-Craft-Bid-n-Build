@@ -654,9 +654,12 @@ setInterval(async () => {
         return g.currentAuction.closed && (g.currentAuctionIdx + 1 >= (g.queue || []).length);
       };
 
-      // Grace Period Trigger (When first group closes its auction)
-      const closedCount = Object.keys(room.groups).filter(g => isGroupFullyClosed(g)).length;
-      if (closedCount > 0 && closedCount < Object.keys(room.groups).length && !room.gracePeriodActive) {
+      // Find all groups that actually have active players connected or registered
+      const activeGroups = Object.keys(room.groups).filter(gn => room.groups[gn].players.length > 0);
+      const closedActiveCount = activeGroups.filter(gn => isGroupFullyClosed(gn)).length;
+
+      // Grace Period Trigger (When first active group closes its auction, only if multiple active groups exist)
+      if (activeGroups.length > 1 && closedActiveCount > 0 && closedActiveCount < activeGroups.length && !room.gracePeriodActive) {
         // Start 60s Grace Period
         room.gracePeriodActive = true;
         room.gracePeriodEndsAt = Date.now() + 60000;
@@ -665,8 +668,12 @@ setInterval(async () => {
         io.to(roomCode).emit('transition:graceStarted', { endsAt: room.gracePeriodEndsAt });
       }
 
-      // Check Grace Period Expiry or All Groups Finished
-      if (room.gracePeriodActive && (Date.now() >= room.gracePeriodEndsAt || closedCount === Object.keys(room.groups).length)) {
+      // Check Grace Period Expiry or All Active Groups Finished
+      const shouldTransitionToBuilder = 
+        (room.gracePeriodActive && Date.now() >= room.gracePeriodEndsAt) || 
+        (closedActiveCount === activeGroups.length && activeGroups.length > 0);
+
+      if (shouldTransitionToBuilder) {
         // Grace period expired ➔ Transition all groups to Builder Phase together!
         room.gracePeriodActive = false;
         room.status = 'builder';
