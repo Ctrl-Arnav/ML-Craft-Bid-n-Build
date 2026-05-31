@@ -324,6 +324,7 @@ io.on('connection', (socket) => {
 
       console.log(`👤 Player ${cleanName} joined room ${cleanRoomCode} in Group ${groupName}`);
 
+      const group = room.groups[groupName];
       // Broadcast Lobby update
       socket.emit('room:sync', {
         playerId: playerDoc.playerId,
@@ -335,7 +336,8 @@ io.on('connection', (socket) => {
         gridState: playerDoc.gridState,
         roomStatus: room.status,
         activeRound: room.activeRound,
-        isRoundSubmitted: playerDoc.isRoundSubmitted
+        isRoundSubmitted: playerDoc.isRoundSubmitted,
+        endsAt: room.status === 'builder' ? group.builderEndsAt : (room.status === 'cooldown' ? group.cooldownEndsAt : (room.status === 'auction' ? group.currentAuction.endsAt : null))
       });
 
       // Join phase reconnection synchronization
@@ -364,6 +366,10 @@ io.on('connection', (socket) => {
           endsAt: auction.endsAt,
           bids: auction.bids || [],
           queue: group.queue || []
+        });
+      } else if (room.status === 'builder') {
+        socket.emit('transition:builderStarted', {
+          endsAt: room.groups[groupName].builderEndsAt
         });
       }
 
@@ -842,6 +848,7 @@ async function handleAuctionClose(roomCode, groupName) {
         io.to(`${roomCode}-${groupName}`).emit('auction:sold', {
           toolId: auction.toolId,
           winner: displayName,
+          winnerId: playerId,
           price,
           emeraldBalance: playerDoc.emeraldBalance
         });
