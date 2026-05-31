@@ -462,6 +462,34 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 2.5 Request Auction Sync (On Mount)
+  socket.on('auction:requestSync', () => {
+    const { roomCode, group } = socket;
+    if (!roomCode || !group) return;
+
+    const room = roomsState[roomCode];
+    if (room && room.status === 'auction') {
+      const auction = room.groups[group].currentAuction;
+      socket.emit('auction:sync', {
+        toolId: auction.toolId,
+        basePrice: auction.basePrice,
+        currentBid: auction.currentBid,
+        leadingPlayer: auction.leadingPlayer,
+        endsAt: auction.endsAt,
+        bids: auction.bids || [],
+        queue: room.groups[group].queue || []
+      });
+    } else if (room && room.status === 'bidding_grace') {
+      socket.emit('transition:biddingGraceStarted', {
+        activeRound: room.activeRound,
+        queue: room.groups[group].queue || [],
+        endsAt: room.biddingGraceEndsAt,
+        firstToolId: room.groups[group].currentAuction?.toolId,
+        firstToolBasePrice: room.groups[group].currentAuction?.basePrice
+      });
+    }
+  });
+
   // 3. Grid Pipeline Submission
   socket.on('pipeline:submit', async ({ gridState, score, roundTimeSpent, isFinal }) => {
     const { roomCode, group, playerId, displayName } = socket;
@@ -1071,7 +1099,8 @@ async function broadcastLeaderboard(roomCode) {
       playerId: p.playerId,
       group: p.group,
       score: p.currentScore,
-      budget: p.emeraldBalance
+      budget: p.emeraldBalance,
+      totalTimeSpent: p.totalTimeSpent
     }));
 
     io.to(roomCode).emit('leaderboard:update', { globalLeaderboard });

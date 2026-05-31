@@ -21,7 +21,7 @@ const TOOL_CATALOG = {
   'ender_chest': { name: 'Ender Chest', type: 'evaluate', tier: 'A', description: 'A massive validation partition. Demands a slight penalty to Time Efficiency, but completely maximizes your true Accuracy and pipeline Stability parameters.', icon: 'https://i.ibb.co/x81srCt4/Ender-Chest.webp', basePrice: 400, accuracyImpact: 0.35, speedImpact: -0.10, stabilityImpact: 0.25, domainLock: null }
 };
 
-export default function AuctionPanel({ socket, playerProfile, activeQuest, onOutbid, onAuctionClosed }) {
+export default function AuctionPanel({ socket, playerProfile, activeQuest, roomStatus, onOutbid, onAuctionClosed }) {
   // --- STATE ---
   const [currentToolId, setCurrentToolId] = useState('raw_iron_ore'); // active auction item
   const [basePrice, setBasePrice] = useState(200);
@@ -86,6 +86,7 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
   // --- WEBSOCKET REAL-TIME SOCKET HANDLERS ---
   useEffect(() => {
     if (!socket) return;
+    socket.emit('auction:requestSync');
 
     // A. Sync initial auction status
     socket.on('auction:sync', (state) => {
@@ -217,7 +218,7 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
   };
 
   return (
-    <div className="h-full w-full flex bg-[#1e2024] font-sans relative overflow-hidden select-none text-slate-100 p-4 gap-4">
+    <div className="h-full w-full flex bg-[#b0b0b0] font-sans relative overflow-hidden select-none text-slate-100 p-4 gap-4">
       
       {/* ==========================================
       LEFT PANEL — TOOL SPOTLIGHT (25vw)
@@ -567,6 +568,51 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
           </div>
         </div>
       </aside>
+
+      {/* ==========================================
+      BUILDER PHASE OVERLAY
+      ========================================== */}
+      {roomStatus === 'builder' && (
+        <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-6 text-slate-900 overflow-hidden">
+          <div className="max-w-4xl w-full max-h-[90vh] bg-[#d2a06c] border-4 border-slate-950 p-6 rounded-lg shadow-2xl relative flex flex-col font-mono">
+            
+            <div className="text-center border-b-2 border-slate-800 pb-3 mb-4 shrink-0">
+              <h2 className="text-2xl font-black tracking-widest text-slate-950 uppercase flex items-center justify-center gap-3">
+                <span className="animate-pulse">⏳</span>
+                Auction starting soon...
+                <span className="animate-pulse">⏳</span>
+              </h2>
+              <p className="text-xs font-bold text-slate-800 mt-2 uppercase tracking-wide">
+                Review the Tool Catalog while the Builders finish their pipelines!
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pr-2 grid grid-cols-2 md:grid-cols-3 gap-3">
+              {Object.entries(TOOL_CATALOG).map(([id, tool]) => (
+                <div key={id} className="bg-slate-950/10 border-2 border-slate-950/20 rounded p-3 flex flex-col shadow-inner hover:bg-slate-950/20 transition-colors">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="w-10 h-10 bg-slate-900/40 rounded border border-slate-950 p-1 flex-shrink-0">
+                      <img src={tool.icon} alt={tool.name} className="w-full h-full object-contain" />
+                    </div>
+                    <div className="flex flex-col overflow-hidden">
+                      <span className="font-black text-slate-950 text-[11px] truncate uppercase">{tool.name}</span>
+                      <span className="text-[9px] font-bold text-slate-800 uppercase">{tool.tier} Tier • {tool.type}</span>
+                    </div>
+                  </div>
+                  <p className="text-[9.5px] leading-tight text-slate-900 font-medium">
+                    {tool.description}
+                  </p>
+                  <div className="mt-auto pt-2 text-[9px] font-bold text-slate-800 flex justify-between border-t border-slate-950/10 mt-2">
+                    <span>💎 {tool.basePrice} min</span>
+                    {tool.domainLock && <span className="text-red-900">Requires {tool.domainLock.toUpperCase()}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+          </div>
+        </div>
+      )}
 
     </div>
   );

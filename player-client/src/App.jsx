@@ -701,8 +701,9 @@ export default function App() {
     );
 
     return (
-      <div className="min-h-screen w-full bg-minecraft-stone flex items-center justify-center p-6 text-slate-100 select-none font-sans">
-        <div className="max-w-xl w-full bg-[#d2a06c] border-4 border-slate-950 p-8 rounded-lg shadow-2xl space-y-6 text-slate-900 text-center font-mono relative overflow-hidden">
+      <div className="min-h-screen w-full bg-minecraft-stone flex flex-col md:flex-row items-center justify-center p-6 gap-6 text-slate-100 select-none font-sans">
+        {/* Left Side: Quest Completed UI */}
+        <div className="max-w-xl w-full max-h-[90vh] overflow-y-auto bg-[#d2a06c] border-4 border-slate-950 p-8 rounded-lg shadow-2xl space-y-6 text-slate-900 text-center font-mono relative">
           <div className="absolute inset-0 bg-gradient-to-b from-yellow-500/10 to-emerald-500/10 pointer-events-none"></div>
           <div className="space-y-2">
             <h1 className="text-3xl font-black tracking-wider uppercase text-slate-950 drop-shadow-md">
@@ -752,8 +753,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className="text-[10px] text-slate-700 leading-relaxed font-bold uppercase text-left bg-slate-900/50 p-4 rounded border border-slate-800">
-            <span className="text-slate-400 font-black mb-2 block">📋 Verification Steps:</span>
+          <div className="text-[10px] text-slate-900 leading-relaxed font-bold uppercase text-left bg-slate-900/50 p-4 rounded border border-slate-800">
+            <span className="text-slate-300 font-black mb-2 block">📋 Verification Steps:</span>
             <ol className="list-decimal pl-4 space-y-1.5">
               <li>Copy your Verification Hash above.</li>
               <li>Click <a href="https://jiit-aiml.onrender.com" target="_blank" rel="noreferrer" className="text-sky-400 hover:text-sky-300 underline font-black">this link (jiit-aiml.onrender.com)</a> to go to the portal.</li>
@@ -762,6 +763,57 @@ export default function App() {
               <li>Paste the hash and submit!</li>
               <li>Done!</li>
             </ol>
+          </div>
+        </div>
+
+        {/* Right Side: Global Leaderboard */}
+        <div className="max-w-md w-full max-h-[90vh] bg-slate-900 border-4 border-slate-950 p-6 rounded-lg shadow-2xl text-slate-100 font-mono overflow-hidden flex flex-col">
+          <h2 className="text-xl font-black text-yellow-400 uppercase tracking-widest text-center border-b-2 border-slate-700 pb-3 mb-4 flex items-center justify-center gap-2">
+            🏆 Final Standings
+          </h2>
+          
+          <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+            {['A', 'B', 'C'].map(groupName => {
+              const groupPlayers = globalLeaderboard.filter(p => p.group === groupName).sort((a, b) => b.score - a.score);
+              if (groupPlayers.length === 0) return null;
+              
+              const bestScore = groupPlayers[0].score;
+
+              return (
+                <div key={groupName} className="bg-slate-800/60 rounded-lg p-3 border border-slate-700/50 shadow-inner">
+                  <div className="text-xs font-black text-sky-400 mb-2 border-b border-slate-700 pb-1 uppercase tracking-wider flex items-center justify-between">
+                    <span>Group {groupName}</span>
+                    <span className="text-[9px] text-slate-500">{groupPlayers.length} Players</span>
+                  </div>
+                  <div className="space-y-2 mt-2">
+                    {groupPlayers.map((p, idx) => {
+                      const isBest = p.score === bestScore && p.score > 0;
+                      const isSelf = p.playerId === playerProfile.playerId;
+                      return (
+                        <div key={p.playerId} className={`flex items-center justify-between text-[10px] p-2 rounded transition-colors ${isBest ? 'bg-yellow-950/40 border border-yellow-700' : 'bg-slate-950/60'} ${isSelf ? 'ring-2 ring-sky-500' : ''}`}>
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-slate-500 w-4 text-right">{idx + 1}.</span>
+                            <span className={`font-black uppercase truncate max-w-[120px] ${isBest ? 'text-yellow-400' : 'text-slate-200'}`}>
+                              {p.name} {isSelf && <span className="text-[8px] text-sky-300 ml-1">(YOU)</span>}
+                            </span>
+                          </div>
+                          <div className="flex flex-col text-right">
+                            <span className="font-black text-emerald-400 text-[11px]">{p.score} pts</span>
+                            <span className="text-[8px] text-slate-400 font-bold">⏱ {p.totalTimeSpent || 0}s</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
+            
+            {globalLeaderboard.length === 0 && (
+              <div className="text-center text-slate-500 italic py-8">
+                No leaderboard data available.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -895,6 +947,7 @@ export default function App() {
               socket={socket} 
               playerProfile={playerProfile} 
               activeQuest={activeQuest}
+              roomStatus={roomStatus}
               onOutbid={playOutbidSound}
               onAuctionClosed={() => {
                 setActiveTab('builder');
