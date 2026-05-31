@@ -280,18 +280,8 @@ io.on('connection', (socket) => {
           return;
         }
 
-        // Sequential Grouping assignment:
-        // - If 10 players or less join then they get put into the same group ('A').
-        // - If 11-20: distribute sequentially into ['A', 'B'].
-        // - If >= 21: distribute sequentially into ['A', 'B', 'C'].
-        const activePlayersCount = await Player.countDocuments({ roomCode: cleanRoomCode });
-        if (activePlayersCount < 10) {
-          groupName = 'A';
-        } else if (activePlayersCount < 20) {
-          groupName = ['A', 'B'][(activePlayersCount - 10) % 2];
-        } else {
-          groupName = ['A', 'B', 'C'][(activePlayersCount - 20) % 3];
-        }
+        // Default to group A, we will rebalance at the end of the join process
+        groupName = 'A';
 
         // Generate custom player ID
         const randomId = Math.floor(1000 + Math.random() * 9000);
@@ -324,54 +314,8 @@ io.on('connection', (socket) => {
 
       console.log(`👤 Player ${cleanName} joined room ${cleanRoomCode} in Group ${groupName}`);
 
-      const group = room.groups[groupName];
-      // Broadcast Lobby update
-      socket.emit('room:sync', {
-        playerId: playerDoc.playerId,
-        displayName: playerDoc.displayName,
-        enrollmentId: playerDoc.enrollmentId,
-        group: groupName,
-        emeraldBalance: playerDoc.emeraldBalance,
-        ownedToolIds: playerDoc.ownedToolIds,
-        gridState: playerDoc.gridState,
-        roomStatus: room.status,
-        activeRound: room.activeRound,
-        isRoundSubmitted: playerDoc.isRoundSubmitted,
-        endsAt: room.status === 'builder' ? group.builderEndsAt : (room.status === 'cooldown' ? group.cooldownEndsAt : (room.status === 'auction' ? group.currentAuction.endsAt : null))
-      });
-
-      // Join phase reconnection synchronization
-      if (room.status === 'bidding_grace') {
-        socket.emit('transition:biddingGraceStarted', {
-          activeRound: room.activeRound,
-          queue: room.groups[groupName].queue || [],
-          endsAt: room.biddingGraceEndsAt,
-          firstToolId: room.groups[groupName].currentAuction.toolId,
-          firstToolBasePrice: room.groups[groupName].currentAuction.basePrice
-        });
-      } else if (room.status === 'auction') {
-        const group = room.groups[groupName];
-        const auction = group.currentAuction;
-        
-        socket.emit('transition:auctionStarted', {
-          activeRound: room.activeRound,
-          queue: group.queue || []
-        });
-
-        socket.emit('auction:sync', {
-          toolId: auction.toolId,
-          basePrice: auction.basePrice,
-          currentBid: auction.currentBid,
-          leadingPlayer: auction.leadingPlayer,
-          endsAt: auction.endsAt,
-          bids: auction.bids || [],
-          queue: group.queue || []
-        });
-      } else if (room.status === 'builder') {
-        socket.emit('transition:builderStarted', {
-          endsAt: room.groups[groupName].builderEndsAt
-        });
-      }
+      // Rebalance all players across groups dynamically and sync their clients
+      await rebalanceGroups(cleanRoomCode, io);
 
       // Update global leaderboard broadcast
       await broadcastLeaderboard(cleanRoomCode);
@@ -1561,3 +1505,101 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`🚀 Bidding WebSocket Backend running on port ${PORT}`);
 });
+
+async function rebalanceGroups(roomCode, io) {
+  const players = await Player.find({ roomCode }).sort({ createdAt: 1 });
+  const total = players.length;
+  
+  let numGroups = 1;
+  if (total > 10 && total <= 20) numGroups = 2;
+  else if (total > 20) numGroups = 3;
+
+  const groupNames = ['A', 'B', 'C'];
+  const room = roomsState[roomCode];
+
+  if (room) {
+    room.groups['A'].players = [];
+    room.groups['B'].players = [];
+    room.groups['C'].players = [];
+  }
+
+  const updates = [];
+  for (let i = 0; i < total; i++) {
+    const p = players[i];
+    const targetGroup = groupNames[i % numGroups];
+    
+    if (p.group !== targetGroup) {
+      p.group = targetGroup;
+      updates.push(p.save());
+    }
+
+    if (room) {
+      room.groups[targetGroup].players.push(p.playerId);
+    }
+  }
+
+  await Promise.all(updates);
+
+  // Update sockets
+  const sockets = await io.in(roomCode).fetchSockets();
+  for (const sock of sockets) {
+    if (sock.playerId) {
+      const p = players.find(pl => pl.playerId === sock.playerId);
+      if (p) {
+        if (sock.group !== p.group) {
+          sock.leave(`${roomCode}-${sock.group}`);
+          sock.group = p.group;
+          sock.join(`${roomCode}-${p.group}`);
+        }
+        
+        const groupData = room ? room.groups[p.group] : null;
+        
+        // Sync the room state to the client
+        sock.emit('room:sync', {
+          playerId: p.playerId,
+          displayName: p.displayName,
+          enrollmentId: p.enrollmentId,
+          group: p.group,
+          emeraldBalance: p.emeraldBalance,
+          ownedToolIds: p.ownedToolIds,
+          gridState: p.gridState,
+          roomStatus: room ? room.status : 'lobby',
+          activeRound: room ? room.activeRound : 0,
+          isRoundSubmitted: p.isRoundSubmitted,
+          endsAt: room && groupData ? (room.status === 'builder' ? groupData.builderEndsAt : (room.status === 'cooldown' ? groupData.cooldownEndsAt : (room.status === 'auction' ? groupData.currentAuction.endsAt : null))) : null
+        });
+
+        // Reconnection payloads based on phase
+        if (room && room.status === 'bidding_grace' && groupData) {
+          sock.emit('transition:biddingGraceStarted', {
+            activeRound: room.activeRound,
+            queue: groupData.queue || [],
+            endsAt: room.biddingGraceEndsAt,
+            firstToolId: groupData.currentAuction.toolId,
+            firstToolBasePrice: groupData.currentAuction.basePrice
+          });
+        } else if (room && room.status === 'auction' && groupData) {
+          const auction = groupData.currentAuction;
+          sock.emit('transition:auctionStarted', {
+            activeRound: room.activeRound,
+            queue: groupData.queue || []
+          });
+          sock.emit('auction:sync', {
+            toolId: auction.toolId,
+            basePrice: auction.basePrice,
+            currentBid: auction.currentBid,
+            leadingPlayer: auction.leadingPlayer,
+            endsAt: auction.endsAt,
+            bids: auction.bids || [],
+            queue: groupData.queue || []
+          });
+        } else if (room && room.status === 'builder' && groupData) {
+          sock.emit('transition:builderStarted', {
+            endsAt: groupData.builderEndsAt
+          });
+        }
+      }
+    }
+  }
+}
+
