@@ -157,6 +157,17 @@ export default function App() {
       });
       setRoomStatus(syncData.roomStatus);
       setIsRoundSubmitted(!!syncData.isRoundSubmitted);
+      
+      if (syncData.endsAt) {
+        if (syncData.roomStatus === 'builder') setBuilderEndsAt(syncData.endsAt);
+        if (syncData.roomStatus === 'cooldown') setCooldownEndsAt(syncData.endsAt);
+      }
+      
+      if (syncData.activeRound) {
+        const quest = QUESTS[syncData.activeRound - 1] || QUESTS[0];
+        setActiveQuest(quest);
+      }
+      
       if (syncData.gridState) {
         setGrid(syncData.gridState);
       }
@@ -222,6 +233,11 @@ export default function App() {
       triggerPipelineSubmit(true);
     });
 
+    newSocket.on('match:finished', () => {
+      setRoomStatus('finished');
+      setNotificationAlert(true);
+    });
+
     newSocket.on('pipeline:submitted', (data) => {
       setIsRoundSubmitted(!!data.isRoundSubmitted);
       if (data.totalTimeSpent !== undefined) {
@@ -233,8 +249,8 @@ export default function App() {
     });
 
     newSocket.on('auction:sold', (data) => {
-      if (data.winner === displayName) {
-        setPlayerProfile(prev => {
+      setPlayerProfile(prev => {
+        if (data.winner === prev.displayName || data.winnerId === prev.playerId) {
           const updatedTools = prev.ownedToolIds.includes(data.toolId)
             ? prev.ownedToolIds
             : [...prev.ownedToolIds, data.toolId];
@@ -243,8 +259,9 @@ export default function App() {
             emeraldBalance: data.emeraldBalance,
             ownedToolIds: updatedTools
           };
-        });
-      }
+        }
+        return prev;
+      });
     });
 
     newSocket.on('emerald:awarded', (data) => {
@@ -735,8 +752,16 @@ export default function App() {
             </div>
           </div>
 
-          <div className="text-[9px] text-slate-700 leading-relaxed font-bold uppercase">
-            📌 Present this 8-digit unique code to the match administrator to verify and validate your pipeline completion credentials.
+          <div className="text-[10px] text-slate-700 leading-relaxed font-bold uppercase text-left bg-slate-900/50 p-4 rounded border border-slate-800">
+            <span className="text-slate-400 font-black mb-2 block">📋 Verification Steps:</span>
+            <ol className="list-decimal pl-4 space-y-1.5">
+              <li>Copy your Verification Hash above.</li>
+              <li>Click <a href="https://jiit-aiml.onrender.com" target="_blank" rel="noreferrer" className="text-sky-400 hover:text-sky-300 underline font-black">this link (jiit-aiml.onrender.com)</a> to go to the portal.</li>
+              <li>Go to the Events section.</li>
+              <li>Select the event.</li>
+              <li>Paste the hash and submit!</li>
+              <li>Done!</li>
+            </ol>
           </div>
         </div>
       </div>
@@ -776,8 +801,14 @@ export default function App() {
             {roomStatus === 'finished' && <span className="text-yellow-300 uppercase tracking-widest font-black">🏆 Finished!</span>}
           </div>
 
-          <div className="bg-slate-800 border-2 border-slate-700 rounded px-3 py-1 text-[10px] font-mono font-extrabold text-slate-300">
-            {QUEST_DOMAINS[activeQuest.domain]?.fieldName || 'General'}
+          <div className="bg-slate-800 border-2 border-slate-700 rounded px-3 py-1 text-[10px] font-mono font-extrabold text-slate-300 flex items-center gap-2">
+            {activeQuest.spotlightTools?.[0] && (() => {
+              const bpTool = TOOLS.find(t => t.id === activeQuest.spotlightTools[0]);
+              return bpTool ? (
+                <img src={bpTool.icon} className="w-4 h-4 object-contain drop-shadow-md" title={`${bpTool.name} recommended`} />
+              ) : null;
+            })()}
+            <span>{QUEST_DOMAINS[activeQuest.domain]?.fieldName || 'General'}</span>
           </div>
         </div>
 
