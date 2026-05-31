@@ -22,6 +22,11 @@ app.use(cors(corsOptions));
 app.options('*', cors(corsOptions)); // Explicitly handle ALL preflight OPTIONS requests
 app.use(express.json());
 
+// Health check — confirms backend is live
+app.get('/', (req, res) => {
+  res.json({ status: '🟢 ML Craft Bid-n-Build backend is live!', timestamp: new Date().toISOString() });
+});
+
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
@@ -333,6 +338,35 @@ io.on('connection', (socket) => {
         isRoundSubmitted: playerDoc.isRoundSubmitted
       });
 
+      // Join phase reconnection synchronization
+      if (room.status === 'bidding_grace') {
+        socket.emit('transition:biddingGraceStarted', {
+          activeRound: room.activeRound,
+          queue: room.groups[groupName].queue || [],
+          endsAt: room.biddingGraceEndsAt,
+          firstToolId: room.groups[groupName].currentAuction.toolId,
+          firstToolBasePrice: room.groups[groupName].currentAuction.basePrice
+        });
+      } else if (room.status === 'auction') {
+        const group = room.groups[groupName];
+        const auction = group.currentAuction;
+        
+        socket.emit('transition:auctionStarted', {
+          activeRound: room.activeRound,
+          queue: group.queue || []
+        });
+
+        socket.emit('auction:sync', {
+          toolId: auction.toolId,
+          basePrice: auction.basePrice,
+          currentBid: auction.currentBid,
+          leadingPlayer: auction.leadingPlayer,
+          endsAt: auction.endsAt,
+          bids: auction.bids || [],
+          queue: group.queue || []
+        });
+      }
+
       // Update global leaderboard broadcast
       await broadcastLeaderboard(cleanRoomCode);
       broadcastAdminSync(cleanRoomCode);
@@ -505,6 +539,54 @@ setInterval(async () => {
   for (const roomCode of Object.keys(roomsState)) {
     const room = roomsState[roomCode];
 
+    // Tick 0: Bidding Grace Phase Timer
+    if (room.status === 'bidding_grace') {
+      if (Date.now() >= room.biddingGraceEndsAt) {
+        room.status = 'auction';
+
+        for (const groupName of Object.keys(room.groups)) {
+          const group = room.groups[groupName];
+          
+          if (group.queue.length > 0) {
+            const firstToolId = group.queue[0];
+            const toolDetails = TOOL_CATALOG[firstToolId];
+            
+            // Emit transition to active bidding!
+            io.to(`${roomCode}-${groupName}`).emit('transition:auctionStarted', {
+              activeRound: room.activeRound,
+              queue: group.queue
+            });
+
+            // Sync first tool details
+            io.to(`${roomCode}-${groupName}`).emit('auction:sync', {
+              toolId: firstToolId,
+              basePrice: toolDetails.basePrice,
+              currentBid: toolDetails.basePrice,
+              leadingPlayer: null,
+              endsAt: null,
+              bids: [],
+              queue: group.queue
+            });
+          } else {
+            // Empty queue transition
+            io.to(`${roomCode}-${groupName}`).emit('transition:auctionStarted', {
+              activeRound: room.activeRound,
+              queue: []
+            });
+          }
+        }
+
+        // Update GameRoom status in DB
+        await GameRoom.findOneAndUpdate(
+          { roomCode },
+          { status: `round${room.activeRound}_auction` },
+          { upsert: true, new: true }
+        );
+
+        broadcastAdminSync(roomCode);
+      }
+    }
+
     // Tick 1: Auction Phase Timers
     if (room.status === 'auction') {
       let allClosed = true;
@@ -632,6 +714,9 @@ setInterval(async () => {
           // Start 30s planning Cooldown
           group.cooldownEndsAt = Date.now() + 30000;
           group.cooldownActive = true;
+ 
+          // Award emeralds to all players in this group for their Elder Flow Score!
+          awardEndRoundEmeraldsForGroup(roomCode, groupName);
 
           // Backend auto-lock for players who did not submit manually
           const autoLockRoomAndGroup = async (rc, gn) => {
@@ -678,10 +763,9 @@ setInterval(async () => {
         // Increment round
         if (room.activeRound < 3) {
           room.activeRound += 1;
-          room.status = 'auction';
           
-          // Reset Group Auction slots and load next queue
-          await startNewAuctionRound(roomCode);
+          // Trigger the 10-second grace and tool line-up phase
+          await triggerBiddingGracePeriod(roomCode);
         } else {
           // End match
           room.status = 'finished';
@@ -766,6 +850,132 @@ async function handleAuctionClose(roomCode, groupName) {
 
   // Sync grid items
   await broadcastLeaderboard(roomCode);
+}
+
+async function triggerBiddingGracePeriod(roomCode) {
+  const room = roomsState[roomCode];
+  room.status = 'bidding_grace';
+  room.biddingGraceEndsAt = Date.now() + 10000; // 10 seconds
+
+  // Reset round submitted state for all players in room
+  try {
+    await Player.updateMany({ roomCode }, { isRoundSubmitted: false });
+    console.log(`🔄 Reset submission lockout state for all players in room ${roomCode}`);
+  } catch (err) {
+    console.error("❌ Error resetting player submission states:", err);
+  }
+
+  let roundTier = room.activeRound === 1 ? 'C' : (room.activeRound === 2 ? 'B' : 'A');
+  const roundTools = Object.keys(TOOL_CATALOG).filter(id => TOOL_CATALOG[id].tier === roundTier);
+
+  for (const groupName of Object.keys(room.groups)) {
+    const group = room.groups[groupName];
+    
+    // Count active players in this group in MongoDB
+    const groupPlayers = await Player.find({ roomCode, group: groupName });
+    const n = groupPlayers.length;
+    const numTools = Math.max(0, n - 1); // Exactly n - 1 tools
+
+    // Build group-specific queue cycling roundTools
+    group.queue = [];
+    for (let i = 0; i < numTools; i++) {
+      group.queue.push(roundTools[i % roundTools.length]);
+    }
+    
+    group.currentAuctionIdx = 0;
+    group.nextItemLoading = false;
+    group.currentAuction = resetGroupAuction();
+    
+    if (group.queue.length > 0) {
+      // Pre-load first item details
+      const firstToolId = group.queue[0];
+      const toolDetails = TOOL_CATALOG[firstToolId];
+
+      group.currentAuction.toolId = firstToolId;
+      group.currentAuction.basePrice = toolDetails.basePrice;
+      group.currentAuction.currentBid = toolDetails.basePrice;
+      
+      // Emit transition grace start to the group
+      io.to(`${roomCode}-${groupName}`).emit('transition:biddingGraceStarted', {
+        activeRound: room.activeRound,
+        queue: group.queue,
+        endsAt: room.biddingGraceEndsAt,
+        firstToolId: firstToolId,
+        firstToolBasePrice: toolDetails.basePrice
+      });
+    } else {
+      group.currentAuction.closed = true;
+      
+      // Emit transition grace start for empty queue
+      io.to(`${roomCode}-${groupName}`).emit('transition:biddingGraceStarted', {
+        activeRound: room.activeRound,
+        queue: [],
+        endsAt: room.biddingGraceEndsAt
+      });
+    }
+  }
+
+  // Update GameRoom status in DB
+  await GameRoom.findOneAndUpdate(
+    { roomCode },
+    { status: `round${room.activeRound}_bidding_grace`, activeRound: room.activeRound },
+    { upsert: true, new: true }
+  );
+
+  broadcastAdminSync(roomCode);
+}
+
+async function awardEndRoundEmeraldsForGroup(roomCode, groupName) {
+  try {
+    const players = await Player.find({ roomCode, group: groupName });
+    for (const player of players) {
+      const scoreAwarded = player.currentScore || 0;
+      player.emeraldBalance += scoreAwarded;
+      
+      // Save changes to DB
+      await player.save();
+      console.log(`💎 Awarded 💎${scoreAwarded} Emeralds to player ${player.displayName} in Group ${groupName}!`);
+
+      // Emit notification to player socket so they get the alert/toast instantly
+      const sockets = await io.in(roomCode).fetchSockets();
+      const playerSocket = sockets.find(s => s.playerId === player.playerId);
+      if (playerSocket) {
+        playerSocket.emit('emerald:awarded', {
+          score: scoreAwarded,
+          newBalance: player.emeraldBalance
+        });
+        
+        // Broadcast profile sync
+        playerSocket.emit('room:sync', {
+          playerId: player.playerId,
+          displayName: player.displayName,
+          enrollmentId: player.enrollmentId,
+          group: player.group,
+          emeraldBalance: player.emeraldBalance,
+          ownedToolIds: player.ownedToolIds,
+          gridState: player.gridState,
+          roomStatus: roomsState[roomCode]?.status || 'builder',
+          activeRound: roomsState[roomCode]?.activeRound || 1,
+          isRoundSubmitted: player.isRoundSubmitted
+        });
+      }
+    }
+    await broadcastLeaderboard(roomCode);
+  } catch (err) {
+    console.error("❌ Error awarding end-of-round emeralds for group:", err);
+  }
+}
+
+async function awardEndRoundEmeraldsForRoom(roomCode) {
+  try {
+    const room = roomsState[roomCode];
+    if (!room) return;
+    for (const groupName of Object.keys(room.groups)) {
+      await awardEndRoundEmeraldsForGroup(roomCode, groupName);
+    }
+  } catch (err) {
+    console.error("❌ Error awarding end-of-round emeralds for room:", err);
+  }
 }
 
 async function startNewAuctionRound(roomCode) {
@@ -1035,14 +1245,16 @@ app.post('/api/admin/round/forcestart', async (req, res) => {
   try {
     if (room.status === 'lobby' || room.activeRound === 0) {
       room.activeRound = 1;
-      room.status = 'auction';
-      await startNewAuctionRound(cleanRoomCode);
+      await triggerBiddingGracePeriod(cleanRoomCode);
     } else {
       if (room.activeRound < 3) {
+        // Award emeralds for the completing round first
+        await awardEndRoundEmeraldsForRoom(cleanRoomCode);
         room.activeRound += 1;
-        room.status = 'auction';
-        await startNewAuctionRound(cleanRoomCode);
+        await triggerBiddingGracePeriod(cleanRoomCode);
       } else {
+        // Award emeralds for the final round 3 first
+        await awardEndRoundEmeraldsForRoom(cleanRoomCode);
         room.status = 'finished';
         await generateRoomVerificationHashes(cleanRoomCode);
         io.to(cleanRoomCode).emit('match:finished');

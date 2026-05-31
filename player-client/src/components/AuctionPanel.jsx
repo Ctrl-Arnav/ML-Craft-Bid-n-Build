@@ -36,9 +36,32 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
   const [outbidToast, setOutbidToast] = useState(null); // Outbid alert msg
   const [showCelebration, setShowCelebration] = useState(false); // Celebratory overlay
   const [soldMessage, setSoldMessage] = useState(null); // Announcement panel
+  const [roomGraceEndsAt, setRoomGraceEndsAt] = useState(null);
+  const [roomGraceTimeLeft, setRoomGraceTimeLeft] = useState(null);
 
   const activeTool = useMemo(() => TOOL_CATALOG[currentToolId] || TOOL_CATALOG.raw_iron_ore, [currentToolId]);
   const isPlayerLeading = leadingPlayer?.playerId === playerProfile.playerId;
+
+  // --- GRACE TIMER EFFECT (200ms Local Ticks) ---
+  useEffect(() => {
+    if (!roomGraceEndsAt) {
+      setRoomGraceTimeLeft(null);
+      return;
+    }
+
+    const timer = setInterval(() => {
+      const remaining = roomGraceEndsAt - Date.now();
+      if (remaining <= 0) {
+        setRoomGraceTimeLeft(null);
+        setRoomGraceEndsAt(null);
+        clearInterval(timer);
+      } else {
+        setRoomGraceTimeLeft(Math.ceil(remaining / 1000));
+      }
+    }, 200);
+
+    return () => clearInterval(timer);
+  }, [roomGraceEndsAt]);
 
   // --- TIMER EFFECT (500ms Local Ticks) ---
   useEffect(() => {
@@ -138,12 +161,31 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
       }, 3000);
     });
 
+    // F. Bidding Grace Phase countdown start
+    socket.on('transition:biddingGraceStarted', (data) => {
+      setRoomGraceEndsAt(data.endsAt);
+      setAuctionQueue(data.queue || []);
+      if (data.firstToolId) {
+        setCurrentToolId(data.firstToolId);
+      }
+      if (data.firstToolBasePrice) {
+        setBasePrice(data.firstToolBasePrice);
+        setCurrentBid(data.firstToolBasePrice);
+      }
+      setLeadingPlayer(null);
+      setEndsAt(null);
+      setBidHistory([]);
+      setSoldMessage(null);
+      setShowCelebration(false);
+    });
+
     return () => {
       socket.off('auction:sync');
       socket.off('auction:bidUpdate');
       socket.off('auction:outbid');
       socket.off('auction:sold');
       socket.off('auction:unsold');
+      socket.off('transition:biddingGraceStarted');
     };
   }, [socket, playerProfile, onOutbid]);
 
@@ -274,7 +316,13 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
 
         {/* Live Timer Clock widget */}
         <div className="flex flex-col items-center mt-12 shrink-0">
-          {timeLeft !== null ? (
+          {roomGraceTimeLeft !== null ? (
+            <div className="flex flex-col items-center animate-pulse py-2">
+              <span className="text-[10px] text-yellow-400 font-extrabold tracking-widest uppercase font-mono bg-yellow-950/40 border border-yellow-800/50 px-4 py-1.5 rounded-md">
+                ⚡ Bidding starts in {roomGraceTimeLeft}s... Lining up tools!
+              </span>
+            </div>
+          ) : timeLeft !== null ? (
             <div className="flex flex-col items-center">
               <span className="text-[9px] text-slate-500 font-black uppercase tracking-widest font-mono">Time Remaining</span>
               <span className={`text-5xl font-black font-mono tracking-tight mt-1 transition-all ${
@@ -331,6 +379,17 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
             <p className="text-sm text-slate-300 mt-1 font-bold">{soldMessage}</p>
           </div>
         )}
+ 
+        {/* Bidding Grace overlay */}
+        {roomGraceTimeLeft !== null && (
+          <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm rounded-lg flex flex-col items-center justify-center z-40 text-center font-mono p-6">
+            <span className="text-6xl animate-pulse">⏳</span>
+            <h2 className="text-2xl font-black text-yellow-500 uppercase tracking-widest mt-4">PRE-ROUND LOBBY</h2>
+            <p className="text-xs text-slate-300 mt-2 max-w-sm">
+              Lining up **{auctionQueue.length} Tools** for this round! Bidding starts in **{roomGraceTimeLeft} seconds**...
+            </p>
+          </div>
+        )}
 
         {/* Action input panel */}
         <div className="bg-slate-950/40 border border-slate-800/80 rounded-lg p-4 flex flex-col gap-3 shrink-0">
@@ -341,46 +400,47 @@ export default function AuctionPanel({ socket, playerProfile, activeQuest, onOut
                 type="number"
                 value={bidAmountInput}
                 onChange={(e) => setBidAmountInput(e.target.value)}
-                placeholder={leadingPlayer ? `Enter min: ${currentBid + 100}` : `Enter min: ${basePrice}`}
-                disabled={playerProfile.emeraldBalance < (leadingPlayer ? currentBid + 100 : basePrice)}
+                placeholder={roomGraceTimeLeft !== null ? "Lining up..." : (leadingPlayer ? `Enter min: ${currentBid + 100}` : `Enter min: ${basePrice}`)}
+                disabled={roomGraceTimeLeft !== null || playerProfile.emeraldBalance < (leadingPlayer ? currentBid + 100 : basePrice)}
                 className="w-full bg-slate-900 border-2 border-slate-800 focus:border-yellow-600 rounded px-8 py-2.5 text-xs text-white font-mono font-bold focus:outline-none transition-colors disabled:opacity-30 disabled:pointer-events-none"
               />
             </div>
             <button 
               type="submit"
-              disabled={isPlayerLeading || playerProfile.emeraldBalance < (leadingPlayer ? currentBid + 100 : basePrice)}
+              disabled={roomGraceTimeLeft !== null || isPlayerLeading || playerProfile.emeraldBalance < (leadingPlayer ? currentBid + 100 : basePrice)}
               className="px-6 bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-400 hover:to-amber-500 text-white font-extrabold text-xs uppercase rounded transition-all shadow-[0_2px_8px_rgba(234,179,8,0.2)] active:scale-95 disabled:opacity-40 disabled:pointer-events-none"
             >
               Raise Bid
             </button>
           </form>
-
+ 
           {/* Quick Raise buttons */}
           <div className="grid grid-cols-4 gap-1.5">
             <button 
               onClick={() => handleQuickBid('+100')} 
-              disabled={playerProfile.emeraldBalance < (currentBid + 100)}
-              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all"
+              disabled={roomGraceTimeLeft !== null || playerProfile.emeraldBalance < (currentBid + 100)}
+              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               + 100
             </button>
             <button 
               onClick={() => handleQuickBid('+300')} 
-              disabled={playerProfile.emeraldBalance < (currentBid + 300)}
-              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all"
+              disabled={roomGraceTimeLeft !== null || playerProfile.emeraldBalance < (currentBid + 300)}
+              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               + 300
             </button>
             <button 
               onClick={() => handleQuickBid('half')}
-              disabled={playerProfile.emeraldBalance < Math.floor(playerProfile.emeraldBalance / 2)}
-              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all"
+              disabled={roomGraceTimeLeft !== null || playerProfile.emeraldBalance < Math.floor(playerProfile.emeraldBalance / 2)}
+              className="py-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-800 hover:border-slate-700 text-slate-300 rounded font-bold font-mono text-[9px] uppercase tracking-wider transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               1/2 Budget
             </button>
             <button 
               onClick={() => handleQuickBid('all')}
-              className="py-1.5 bg-red-950/30 hover:bg-red-950/60 border border-red-900/60 hover:border-red-900 text-red-400 rounded font-black font-mono text-[9px] uppercase tracking-widest transition-all"
+              disabled={roomGraceTimeLeft !== null}
+              className="py-1.5 bg-red-950/30 hover:bg-red-950/60 border border-red-900/60 hover:border-red-900 text-red-400 rounded font-black font-mono text-[9px] uppercase tracking-widest transition-all disabled:opacity-30 disabled:pointer-events-none"
             >
               All In!
             </button>

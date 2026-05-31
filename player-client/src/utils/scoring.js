@@ -85,6 +85,15 @@ export function calculateGridScore(activePipeline, problem) {
     accModifiers += optimizerPresent.accuracyImpact;
     stabilityModifiers += optimizerPresent.stabilityImpact;
     speedModifiers += optimizerPresent.speedImpact;
+
+    // Explicit optimizer boosts (Anvil & Enchanting Bench)
+    if (optimizerPresent.id === 'anvil_restructurer') {
+      accModifiers += 0.15;
+      speedModifiers += 0.15;
+    } else if (optimizerPresent.id === 'enchanting_bench') {
+      accModifiers += 0.25;
+      speedModifiers += 0.10;
+    }
   }
 
   if (evaluatorPresent) {
@@ -104,7 +113,7 @@ export function calculateGridScore(activePipeline, problem) {
   if (activeBlueprint && problem) {
     const isMatched = activeBlueprint.domainLock === problem.domain;
     if (isMatched) {
-      accumulatedAccuracy = accumulatedAccuracy * 1.5;
+      accumulatedAccuracy = accumulatedAccuracy * 1.2;
     } else {
       if (activeBlueprint.id === 'axe_blueprint') {
         accumulatedAccuracy -= 0.20;
@@ -121,7 +130,7 @@ export function calculateGridScore(activePipeline, problem) {
   const hasAutoCrafter = activePipeline.some(s => s.id === 'auto_crafter_block');
   const hasRedstoneBlock = activePipeline.some(s => s.id === 'redstone_compute_block');
 
-  const accuracy = Math.min(1.0, Math.max(0.0, accumulatedAccuracy));
+  const accuracy = Math.min(0.99, Math.max(0.0, accumulatedAccuracy));
   const speed = (hasAutoCrafter && hasRedstoneBlock) ? 1.0 : Math.min(1.0, Math.max(0.0, baseSpeed + speedModifiers));
   const stability = Math.min(1.0, Math.max(0.0, baseStability + stabilityModifiers));
   const costEfficiency = Math.min(1.0, Math.max(0.0, (1000 - totalCost) / 1000));

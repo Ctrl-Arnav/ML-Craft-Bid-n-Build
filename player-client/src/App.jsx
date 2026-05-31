@@ -222,6 +222,42 @@ export default function App() {
       }
     });
 
+    newSocket.on('auction:sold', (data) => {
+      if (data.winner === displayName) {
+        setPlayerProfile(prev => {
+          const updatedTools = prev.ownedToolIds.includes(data.toolId)
+            ? prev.ownedToolIds
+            : [...prev.ownedToolIds, data.toolId];
+          return {
+            ...prev,
+            emeraldBalance: data.emeraldBalance,
+            ownedToolIds: updatedTools
+          };
+        });
+      }
+    });
+
+    newSocket.on('emerald:awarded', (data) => {
+      setPlayerProfile(prev => ({
+        ...prev,
+        emeraldBalance: data.newBalance
+      }));
+      alert(`💎 Round ended! You have been awarded 💎${data.score} Emeralds for your Elder Flow Score!`);
+    });
+
+    newSocket.on('transition:biddingGraceStarted', (data) => {
+      setRoomStatus('bidding_grace');
+      setActiveTab('auction');
+      setNotificationAlert(true);
+      setIsRoundSubmitted(false);
+      setPlayerProfile(prev => ({
+        ...prev,
+        activeRound: data.activeRound
+      }));
+      const quest = QUESTS[data.activeRound - 1] || QUESTS[0];
+      setActiveQuest(quest);
+    });
+
     newSocket.on('error:join', (msg) => {
       alert(msg);
       newSocket.disconnect();
