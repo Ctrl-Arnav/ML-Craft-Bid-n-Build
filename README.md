@@ -6,7 +6,7 @@ The codebase is organized as a clean **Monorepo** designed to be pushed as a pri
 
 ---
 
-## 📁 Repository Structure
+##  Repository Structure
 
 ```text
 bidding-auction-system/ (Root Repository -> Private on GitHub)
@@ -50,7 +50,7 @@ bidding-auction-system/ (Root Repository -> Private on GitHub)
 
 ---
 
-## ⚡ Local Development Quick Start
+##  Local Development Quick Start
 
 To run the complete system locally, follow these commands in three separate terminal instances:
 
@@ -82,7 +82,7 @@ The lobby host dashboard will boot on `http://localhost:5174`.
 
 ---
 
-## 🔑 Environment Variables Setup
+##  Environment Variables Setup
 
 Configure these secrets in Vercel and Railway dashboard settings:
 
@@ -101,7 +101,7 @@ In **both** Vercel projects (`player-client` and `admin-client`), set:
 
 ---
 
-## 🚀 Cloud Deployment Roadmap
+##  Cloud Deployment Roadmap
 
 ### A. Railway (Backend Deployment)
 1. Link your private GitHub repository `bidding-auction-system` in Railway.
