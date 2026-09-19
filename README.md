@@ -103,7 +103,7 @@ In **both** Vercel projects (`player-client` and `admin-client`), set:
 
 ##  Cloud Deployment Roadmap
 
-### A. Railway (Backend Deployment)
+### A. Railway(Now moving to Render) (Backend Deployment)
 1. Link your private GitHub repository `bidding-auction-system` in Railway.
 2. In the setup wizard, set the **Root Directory** as **`backend`**.
 3. Add your `MONGO_URI` secret in the **Variables** tab.
