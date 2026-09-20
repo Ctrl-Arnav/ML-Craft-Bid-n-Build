@@ -6,7 +6,7 @@ This repository hosts the stateful multiplayer **Bidding & Auction System** coup
 
 Players join a live room and are automatically sorted into balanced groups (pods). The game runs in **3 rounds**, each following a tight loop:
 
-1. **Auction Phase** — A series of tool blocks (datasets, processors, models, optimizers, evaluators) are put up for auction one by one. Players compete in real-time bidding wars using a limited budget of *Emeralds*, with a 25-second countdown that resets on every new bid. Each group gets exactly `n − 1` items (where `n` is the group size), so at least one player walks away empty-handed every round.
+1. **Auction Phase** — A series of tool blocks (datasets, processors, models, optimizers, evaluators) are put up for auction one by one. Players compete in real-time bidding wars using a limited budget of *Emeralds*, with a 25-second countdown that resets on every new bid. Each group gets exactly `n - 1` items (where `n` is the group size), so at least one player walks away empty-handed every round.
 2. **Builder Phase (6 min)** — Players drag their acquired tools from an inventory shelf onto a 9x9 grid canvas to construct a sequential 6-slot ML pipeline. A live scoring engine evaluates three metrics — **Accuracy**, **Time Efficiency**, and **Stability** — based on each block's hidden stat impacts, domain compatibility, and placement order.
 3. **Cooldown & Scoring** — Pipelines are auto-locked, scores are converted into Emerald income for the next round's auction budget, and the leaderboard updates globally.
 
