@@ -2,11 +2,37 @@
 
 This repository hosts the stateful multiplayer **Bidding & Auction System** coupled with the visual **9x9 grid sandbox builder** for **AI Pipeline Arena**. 
 
+### How the Game Works
+
+Players join a live room and are automatically sorted into balanced groups (pods). The game runs in **3 rounds**, each following a tight loop:
+
+1. **Auction Phase** — A series of tool blocks (datasets, processors, models, optimizers, evaluators) are put up for auction one by one. Players compete in real-time bidding wars using a limited budget of *Emeralds*, with a 25-second countdown that resets on every new bid. Each group gets exactly `n − 1` items (where `n` is the group size), so at least one player walks away empty-handed every round.
+2. **Builder Phase (6 min)** — Players drag their acquired tools from an inventory shelf onto a 9x9 grid canvas to construct a sequential 6-slot ML pipeline. A live scoring engine evaluates three metrics — **Accuracy**, **Time Efficiency**, and **Stability** — based on each block's hidden stat impacts, domain compatibility, and placement order.
+3. **Cooldown & Scoring** — Pipelines are auto-locked, scores are converted into Emerald income for the next round's auction budget, and the leaderboard updates globally.
+
+After all 3 rounds, each player receives a unique **cryptographic verification hash** derived from their name, enrollment ID, final score, and total time spent — serving as a tamper-proof proof-of-participation that can be submitted to an external portal.
+
+### Minecraft Meets Machine Learning
+
+Every tool in the game is skinned as a recognizable Minecraft item, but each one maps directly to a real stage of an ML pipeline. Players don't need prior ML knowledge — the game teaches the concepts through play:
+
+| Minecraft Tool | ML Pipeline Role | What It Does In-Game |
+|:---|:---|:---|
+| **Cobblestone / Raw Iron / Gold Ore / Diamond Ore** | Training Dataset | Data inputs of increasing quality. Raw ores (noisy data) boost Accuracy potential but tank Stability unless cleaned first. Diamond Ore is high-dimensional and pristine but crushes Time Efficiency. |
+| **Furnace / Blast Furnace** | Data Preprocessing | Cleans raw ore inputs. A standard Furnace removes noise at a small speed cost; the Blast Furnace normalizes features *and* boosts speed — like the difference between manual imputation and an automated `sklearn` pipeline. |
+| **Axe / Pickaxe / Sword / Shovel Blueprints** | Domain-Specific Feature Extractor | Each blueprint is locked to a problem domain (Text, Vision, Anomaly, Time-Series). Matching the blueprint to the round's quest (e.g. Pickaxe for an Image Classification quest) triggers a massive Accuracy multiplier — mismatching it applies a penalty, just like using a CNN on tabular data. |
+| **Crafting Table / Auto-Crafter** | Model Architecture | The Crafting Table is a safe, general-purpose model (think Logistic Regression). The Auto-Crafter is a powerful deep learner (think a fine-tuned neural net) that yields higher scores but costs more Emeralds. |
+| **Redstone Compute Block** | GPU / Hardware Accelerator | A sidecar block that plugs into the Auto-Crafter to skyrocket Time Efficiency — simulating the effect of adding GPU compute to a training job. |
+| **Anvil / Enchanting Bench** | Regularization & Hyperparameter Tuning | The Anvil stabilizes volatile models (L2 regularization); the Enchanting Bench applies aggressive tuning that spikes Accuracy but drains budget (grid-search on a massive param space). |
+| **Wooden Chest / Ender Chest** | Validation / Evaluation Split | A small chest is a quick 80/20 holdout — fast but high-variance. The Ender Chest is a full k-fold cross-validation suite — slow but maximizes true Accuracy and Stability. |
+
+The result: players intuitively learn that *a raw dataset needs cleaning before modeling*, *domain-specific feature extraction matters*, and *more compute isn't free* — all without reading a single textbook.
+
 The codebase is organized as a clean **Monorepo** designed to be pushed as a private repository to GitHub, allowing seamless stateful server deployment on **Railway** and stateless frontend clients on **Vercel**.
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```text
 bidding-auction-system/ (Root Repository -> Private on GitHub)
@@ -50,7 +76,7 @@ bidding-auction-system/ (Root Repository -> Private on GitHub)
 
 ---
 
-## ⚡ Local Development Quick Start
+## Local Development Quick Start
 
 To run the complete system locally, follow these commands in three separate terminal instances:
 
@@ -82,7 +108,7 @@ The lobby host dashboard will boot on `http://localhost:5174`.
 
 ---
 
-## 🔑 Environment Variables Setup
+## Environment Variables Setup
 
 Configure these secrets in Vercel and Railway dashboard settings:
 
@@ -101,7 +127,7 @@ In **both** Vercel projects (`player-client` and `admin-client`), set:
 
 ---
 
-## 🚀 Cloud Deployment Roadmap
+## Cloud Deployment Roadmap
 
 ### A. Railway (Backend Deployment)
 1. Link your private GitHub repository `bidding-auction-system` in Railway.
