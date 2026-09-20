@@ -32,7 +32,7 @@ The codebase is organized as a clean **Monorepo** designed to be pushed as a pri
 
 <img width="1195" height="932" alt="WhatsApp Image 2026-09-20 at 2 14 34 PM" src="https://github.com/user-attachments/assets/c0b28048-1f48-4c56-9e6a-2c845decfdc6" />
 
-
+Below you can see what happens if a core elements is missing from the pipeline.
 <img width="1192" height="936" alt="image" src="https://github.com/user-attachments/assets/0a3e8131-84d4-4846-85c8-88fac9bb48d7" />
 
 
