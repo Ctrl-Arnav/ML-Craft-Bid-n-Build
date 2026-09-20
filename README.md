@@ -12,6 +12,11 @@ Players join a live room and are automatically sorted into balanced groups (pods
 
 After all 3 rounds, each player receives a unique **cryptographic verification hash** derived from their name, enrollment ID, final score, and total time spent — serving as a tamper-proof proof-of-participation that can be submitted to an external portal.
 
+<img width="1195" height="932" alt="WhatsApp Image 2026-09-20 at 2 14 34 PM" src="https://github.com/user-attachments/assets/c0b28048-1f48-4c56-9e6a-2c845decfdc6" />
+
+* Below you can see what happens if a core element is missing from the pipeline.
+<img width="1192" height="936" alt="image" src="https://github.com/user-attachments/assets/0a3e8131-84d4-4846-85c8-88fac9bb48d7" />
+
 ### Minecraft Meets Machine Learning
 
 Every tool in the game is skinned as a recognizable Minecraft item, but each one maps directly to a real stage of an ML pipeline. Players don't need prior ML knowledge — the game teaches the concepts through play:
@@ -30,10 +35,6 @@ The result: players intuitively learn that *a raw dataset needs cleaning before 
 
 The codebase is organized as a clean **Monorepo** designed to be pushed as a private repository to GitHub, allowing seamless stateful server deployment on **Railway** and stateless frontend clients on **Vercel**.
 
-<img width="1195" height="932" alt="WhatsApp Image 2026-09-20 at 2 14 34 PM" src="https://github.com/user-attachments/assets/c0b28048-1f48-4c56-9e6a-2c845decfdc6" />
-
-* Below you can see what happens if a core element is missing from the pipeline.
-<img width="1192" height="936" alt="image" src="https://github.com/user-attachments/assets/0a3e8131-84d4-4846-85c8-88fac9bb48d7" />
 
 
 ---
